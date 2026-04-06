@@ -37,9 +37,18 @@ function fmtNum(n: number): string {
  * Each entry: [hebrewPhrase, numericValue]
  */
 const HEBREW_FRACTION_PHRASES: [string, number][] = [
+  // Compound "N and a half" — must appear BEFORE standalone 'חצי'
+  ['אחד וחצי',      1.5  ],
+  ['אחת וחצי',      1.5  ],
+  ['שניים וחצי',    2.5  ],
+  ['שתיים וחצי',    2.5  ],
+  ['שלושה וחצי',    3.5  ],
+  ['שלוש וחצי',     3.5  ],
+  // Unit-quantity compounds
   ['כוס וחצי',      1.5  ],
   ['שלושת רבעי',    0.75 ],
   ['שני שלישים',    0.667],
+  // Standalone fractions
   ['חצי',           0.5  ],
   ['רבע',           0.25 ],
   ['שליש',          0.333],
@@ -445,7 +454,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.10.0</Text>
+          <Text style={styles.versionLabel}>v1.11.2</Text>
         </ScrollView>
       )}
     </SafeAreaView>

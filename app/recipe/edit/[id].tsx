@@ -19,6 +19,8 @@ import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { fetchRecipeById, fetchCategories, updateRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
+import { useSpeechInput } from '@/lib/useSpeechInput';
+import { MicButton, SpeechToast } from '@/components/MicButton';
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -44,6 +46,8 @@ export default function EditRecipeScreen() {
   const [steps, setSteps]             = useState<string[]>(['']);
   const [imageUri, setImageUri]       = useState<string | null>(null);   // new local image
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null); // remote URL
+
+  const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
   // ── Loading state ──
   const [isFetching, setIsFetching]   = useState(true);
@@ -164,6 +168,7 @@ export default function EditRecipeScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <SpeechToast message={toastMsg} />
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
 
         {/* ── Top bar ── */}
@@ -294,6 +299,10 @@ export default function EditRecipeScreen() {
                   onChangeText={v => updateIngredient(index, v)}
                   returnKeyType="next"
                 />
+                <MicButton
+                  isActive={activeTarget?.type === 'ingredient' && activeTarget.index === index}
+                  onPress={() => startListening('ingredient', index, ingredient, v => updateIngredient(index, v))}
+                />
               </View>
             ))}
             <TouchableOpacity
@@ -326,6 +335,10 @@ export default function EditRecipeScreen() {
                     textAlignVertical="top"
                   />
                 </View>
+                <MicButton
+                  isActive={activeTarget?.type === 'step' && activeTarget.index === index}
+                  onPress={() => startListening('step', index, step, v => updateStep(index, v))}
+                />
               </View>
             ))}
             <TouchableOpacity
@@ -358,7 +371,7 @@ export default function EditRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.4.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.11.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
