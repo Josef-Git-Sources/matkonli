@@ -17,7 +17,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
-import { fetchRecipes } from '@/lib/api';
+import { fetchRecipes, toggleFavorite } from '@/lib/api';
 import type { RecipeWithCategories } from '@/lib/api';
 import type { DifficultyLevel } from '@/types/database';
 
@@ -57,9 +57,10 @@ export default function HomeScreen() {
   const [recipes, setRecipes]             = useState<RecipeWithCategories[]>([]);
   const [isLoading, setIsLoading]         = useState(true);
   const [error, setError]                 = useState<string | null>(null);
-  const [searchQuery, setSearchQuery]         = useState('');
-  const [selectedCategory, setSelectedCategory]   = useState<string | null>(null);
+  const [searchQuery, setSearchQuery]               = useState('');
+  const [selectedCategory, setSelectedCategory]     = useState<string | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel | null>(null);
+  const [showFavoritesOnly, setShowFavoritesOnly]   = useState(false);
   const router     = useRouter();
   const { width }  = useWindowDimensions();
   const numColumns = getNumColumns(width);
@@ -74,6 +75,16 @@ export default function HomeScreen() {
         .finally(() => setIsLoading(false));
     }, [])
   );
+
+  function handleToggleFavorite(id: string, currentValue: boolean) {
+    const newValue = !currentValue;
+    // Optimistic update — filteredRecipes recomputes immediately from the new recipes state
+    setRecipes(prevRecipes => prevRecipes.map(r => r.id === id ? { ...r, is_favorite: newValue } : r));
+    // Sync to DB; revert on failure
+    toggleFavorite(id, newValue).catch(() => {
+      setRecipes(prevRecipes => prevRecipes.map(r => r.id === id ? { ...r, is_favorite: currentValue } : r));
+    });
+  }
 
   // Derive unique category names from all loaded recipes
   const availableCategories = useMemo<string[]>(() => {
@@ -91,10 +102,11 @@ export default function HomeScreen() {
     return order.filter(d => seen.has(d));
   }, [recipes]);
 
-  // Apply search + category + difficulty filter
+  // Apply search + category + difficulty + favorites filter
   const filteredRecipes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return recipes.filter(r => {
+      if (showFavoritesOnly && !r.is_favorite) return false;
       const matchesSearch = !q || (
         r.title.toLowerCase().includes(q) ||
         (r.description ?? '').toLowerCase().includes(q) ||
@@ -104,7 +116,7 @@ export default function HomeScreen() {
       const matchesDifficulty = !selectedDifficulty || r.difficulty === selectedDifficulty;
       return matchesSearch && matchesCategory && matchesDifficulty;
     });
-  }, [recipes, searchQuery, selectedCategory, selectedDifficulty]);
+  }, [recipes, searchQuery, selectedCategory, selectedDifficulty, showFavoritesOnly]);
 
   // Pad with filler cells so the last grid row doesn't stretch
   const remainder   = filteredRecipes.length % numColumns;
@@ -216,6 +228,17 @@ export default function HomeScreen() {
               </ScrollView>
             </View>
           )}
+
+          {/* Favorites toggle */}
+          <TouchableOpacity
+            style={[styles.favoritesChip, showFavoritesOnly && styles.favoritesChipActive]}
+            onPress={() => setShowFavoritesOnly(prev => !prev)}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.favoritesChipLabel, showFavoritesOnly && styles.favoritesChipLabelActive]}>
+              ⭐ מועדפים בלבד
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -233,7 +256,7 @@ export default function HomeScreen() {
           <Text style={styles.emptyText}>
             עדיין אין מתכונים.{'\n'}לחץ על ה-➕ כדי להוסיף את המתכון הראשון שלך!
           </Text>
-          <Text style={styles.versionLabel}>גרסה: v1.7.1</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.10.2</Text>
         </View>
       ) : filteredRecipes.length === 0 ? (
         <View style={styles.centerContent}>
@@ -257,11 +280,12 @@ export default function HomeScreen() {
                 recipe={item}
                 onPress={() => router.push(`/recipe/${item.id}`)}
                 numColumns={numColumns}
+                onToggleFavorite={() => handleToggleFavorite(item.id, item.is_favorite)}
               />
             )
           }
           ListFooterComponent={
-            <Text style={styles.versionLabel}>גרסה: v1.7.1</Text>
+            <Text style={styles.versionLabel}>גרסה: v1.10.2</Text>
           }
         />
       )}
@@ -299,10 +323,12 @@ function RecipeCard({
   recipe,
   onPress,
   numColumns,
+  onToggleFavorite,
 }: {
   recipe: RecipeWithCategories;
   onPress: () => void;
   numColumns: number;
+  onToggleFavorite: () => void;
 }) {
   const stepCount      = recipe.instructions?.length ?? 0;
   const ingredientHint = stepCount > 0 ? `${stepCount} שלבים` : null;
@@ -321,13 +347,27 @@ function RecipeCard({
             <Ionicons name="image-outline" size={32} color={Colors.border} />
           </View>
         )}
+        {/* Share — top-left */}
         <TouchableOpacity
           style={styles.cardShareButton}
           onPress={() => handleShare(recipe)}
           activeOpacity={0.8}
           hitSlop={6}
         >
-          <Ionicons name="share-outline" size={15} color="#fff" />
+          <Ionicons name="share-social-outline" size={15} color="#fff" />
+        </TouchableOpacity>
+        {/* Favorite — top-right */}
+        <TouchableOpacity
+          style={styles.cardFavoriteButton}
+          onPress={onToggleFavorite}
+          activeOpacity={0.8}
+          hitSlop={6}
+        >
+          <Ionicons
+            name={recipe.is_favorite ? 'heart' : 'heart-outline'}
+            size={15}
+            color={recipe.is_favorite ? '#E74C3C' : '#fff'}
+          />
         </TouchableOpacity>
       </View>
 
@@ -529,6 +569,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 6,
   },
+  cardFavoriteButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 16,
+    padding: 6,
+  },
   cardImagePlaceholder: {
     width: '100%',
     aspectRatio: 1,
@@ -546,6 +594,30 @@ const styles = StyleSheet.create({
 
   difficultyBadge: { borderRadius: 5, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 1 },
   difficultyText:  { fontSize: 11, fontWeight: '600' },
+
+  // ── Favorites chip ──
+  favoritesChip: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#F0C040',
+    backgroundColor: Colors.background,
+    marginBottom: 2,
+  },
+  favoritesChipActive: {
+    backgroundColor: '#F0C040',
+    borderColor: '#F0C040',
+  },
+  favoritesChipLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#B8860B',
+  },
+  favoritesChipLabelActive: {
+    color: '#5C4000',
+  },
 
   versionLabel: {
     textAlign: 'center',

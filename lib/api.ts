@@ -156,6 +156,14 @@ export async function deleteRecipe(id: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function toggleFavorite(id: string, isFavorite: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('recipes')
+    .update({ is_favorite: isFavorite })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 export interface UpdateRecipeParams {
   title:              string;
   description:        string;

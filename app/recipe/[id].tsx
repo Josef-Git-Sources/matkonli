@@ -18,7 +18,7 @@ import { useCallback, useState } from 'react';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
-import { fetchRecipeById, deleteRecipe } from '@/lib/api';
+import { fetchRecipeById, deleteRecipe, toggleFavorite } from '@/lib/api';
 import type { RecipeDetail } from '@/lib/api';
 import type { DifficultyLevel } from '@/types/database';
 
@@ -138,6 +138,19 @@ export default function RecipeDetailScreen() {
   const [isDeleting, setIsDeleting]               = useState(false);
   const [multiplier, setMultiplier]               = useState(1);
 
+  async function handleToggleFavorite() {
+    if (!recipe) return;
+    const newValue = !recipe.is_favorite;
+    // Optimistic update
+    setRecipe(prev => prev ? { ...prev, is_favorite: newValue } : prev);
+    try {
+      await toggleFavorite(recipe.id, newValue);
+    } catch {
+      // Revert on failure
+      setRecipe(prev => prev ? { ...prev, is_favorite: !newValue } : prev);
+    }
+  }
+
   async function handleShare() {
     if (!recipe) return;
 
@@ -212,6 +225,17 @@ export default function RecipeDetailScreen() {
                 activeOpacity={0.7}
               >
                 <Ionicons name="share-social-outline" size={22} color={Colors.textPrimary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.topBarButton}
+                onPress={handleToggleFavorite}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={recipe.is_favorite ? 'heart' : 'heart-outline'}
+                  size={22}
+                  color={recipe.is_favorite ? '#E74C3C' : Colors.textPrimary}
+                />
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.topBarButton}
@@ -421,7 +445,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.9.1</Text>
+          <Text style={styles.versionLabel}>v1.10.0</Text>
         </ScrollView>
       )}
     </SafeAreaView>

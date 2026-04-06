@@ -50,6 +50,7 @@ export interface RecipeRow {
   servings:     number | null;
   difficulty:   DifficultyLevel | null;
   is_public:    boolean;
+  is_favorite:  boolean;
   source_url:   string | null;
   source_type:  RecipeSource;
   language:     string;
