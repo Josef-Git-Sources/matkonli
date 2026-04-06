@@ -13,11 +13,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
-import { fetchCategories, saveRecipe } from '@/lib/api';
+import { fetchRecipeById, fetchCategories, updateRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 
 // ── Constants ─────────────────────────────────────────────────
@@ -28,31 +28,52 @@ const DIFFICULTY_OPTIONS: { value: DifficultyLevel; label: string; color: string
   { value: 'hard',   label: 'קשה',   color: '#C0392B' },
 ];
 
-// ── Component ─────────────────────────────────────────────────
+// ── Screen ────────────────────────────────────────────────────
 
-export default function AddRecipeScreen() {
-  const router = useRouter();
+export default function EditRecipeScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const router  = useRouter();
 
+  // ── Form state ──
   const [title, setTitle]             = useState('');
   const [description, setDescription] = useState('');
   const [prepTime, setPrepTime]       = useState('');
   const [difficulty, setDifficulty]   = useState<DifficultyLevel | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [ingredients, setIngredients]   = useState<string[]>(['']);
-  const [steps, setSteps]               = useState<string[]>(['']);
-  const [imageUri, setImageUri]         = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [ingredients, setIngredients] = useState<string[]>(['']);
+  const [steps, setSteps]             = useState<string[]>(['']);
+  const [imageUri, setImageUri]       = useState<string | null>(null);   // new local image
+  const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null); // remote URL
 
+  // ── Loading state ──
+  const [isFetching, setIsFetching]   = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [fetchError, setFetchError]   = useState<string | null>(null);
+
+  // ── Categories ──
   const [categories, setCategories]               = useState<CategoryRow[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
-  const [categoriesError, setCategoriesError]     = useState<string | null>(null);
 
+  // Fetch recipe + categories in parallel on mount
   useEffect(() => {
-    fetchCategories()
-      .then(setCategories)
-      .catch(() => setCategoriesError('שגיאה בטעינת הקטגוריות'))
-      .finally(() => setCategoriesLoading(false));
-  }, []);
+    if (!id) return;
+    Promise.all([fetchRecipeById(id), fetchCategories()])
+      .then(([recipe, cats]) => {
+        setTitle(recipe.title);
+        setDescription(recipe.description ?? '');
+        setPrepTime(recipe.prep_time ? String(recipe.prep_time) : '');
+        setDifficulty(recipe.difficulty ?? null);
+        setSelectedCategories(recipe.categories.map(c => c.id));
+        setIngredients(recipe.ingredients.length > 0 ? recipe.ingredients.map(i => i.name) : ['']);
+        setSteps(recipe.instructions.length > 0 ? recipe.instructions.map(s => s.text) : ['']);
+        setExistingImageUrl(recipe.image_url ?? null);
+        setCategories(cats);
+      })
+      .catch(() => setFetchError('שגיאה בטעינת המתכון'))
+      .finally(() => { setIsFetching(false); setCategoriesLoading(false); });
+  }, [id]);
+
+  // ── Handlers ──
 
   async function pickImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -66,21 +87,18 @@ export default function AddRecipeScreen() {
       aspect: [4, 3],
       quality: 0.8,
     });
-    if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
-    }
+    if (!result.canceled) setImageUri(result.assets[0].uri);
   }
 
-  function toggleCategory(id: string) {
+  function toggleCategory(catId: string) {
     setSelectedCategories(prev =>
-      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
+      prev.includes(catId) ? prev.filter(c => c !== catId) : [...prev, catId]
     );
   }
 
   function updateIngredient(index: number, value: string) {
     setIngredients(prev => prev.map((item, i) => (i === index ? value : item)));
   }
-
   function removeIngredient(index: number) {
     setIngredients(prev => prev.length === 1 ? [''] : prev.filter((_, i) => i !== index));
   }
@@ -88,7 +106,6 @@ export default function AddRecipeScreen() {
   function updateStep(index: number, value: string) {
     setSteps(prev => prev.map((item, i) => (i === index ? value : item)));
   }
-
   function removeStep(index: number) {
     setSteps(prev => prev.length === 1 ? [''] : prev.filter((_, i) => i !== index));
   }
@@ -98,52 +115,77 @@ export default function AddRecipeScreen() {
       Alert.alert('שגיאה', 'נא להזין כותרת למתכון');
       return;
     }
-
     setIsSubmitting(true);
     try {
-      await saveRecipe({ title, description, prepTime, difficulty, selectedCategories, ingredients, steps, imageUri: imageUri ?? undefined });
-      setTitle('');
-      setDescription('');
-      setPrepTime('');
-      setDifficulty(null);
-      setSelectedCategories([]);
-      setIngredients(['']);
-      setSteps(['']);
-      setImageUri(null);
-      router.replace('/');
+      await updateRecipe(id!, {
+        title,
+        description,
+        prepTime,
+        difficulty,
+        selectedCategories,
+        ingredients,
+        steps,
+        imageUri:         imageUri ?? undefined,
+        existingImageUrl: existingImageUrl ?? undefined,
+      });
+      router.replace(`/recipe/${id}`);
     } catch (error: any) {
-      console.error('Save Error:', error);
-      alert('שגיאה בשמירה: ' + (error.message || JSON.stringify(error)));
+      console.error('Update Error:', error);
+      Alert.alert('שגיאה בשמירה', error.message || JSON.stringify(error));
     } finally {
       setIsSubmitting(false);
     }
   }
 
   const canSave = title.trim().length > 0 && !isSubmitting;
+  const previewUri = imageUri ?? existingImageUrl;
+
+  // ── Loading / error gates ──
+
+  if (isFetching) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centerContent}>
+          <Text style={styles.errorText}>{fetchError}</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+
+        {/* ── Top bar ── */}
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.topBarButton} activeOpacity={0.7}>
+            <Ionicons name="chevron-forward" size={26} color={Colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.topBarTitle} numberOfLines={1}>עריכת מתכון</Text>
+          <View style={{ width: 34 }} />
+        </View>
+
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
 
-          {/* ── Header ── */}
-          <View style={styles.header}>
-            <Ionicons name="restaurant-outline" size={22} color={Colors.primary} />
-            <Text style={styles.headerTitle}>מתכון חדש</Text>
-          </View>
-
           {/* ══ IMAGE PICKER ══ */}
           <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.8}>
-            {imageUri ? (
+            {previewUri ? (
               <>
-                <Image source={{ uri: imageUri }} style={styles.imagePreview} resizeMode="cover" />
+                <Image source={{ uri: previewUri }} style={styles.imagePreview} resizeMode="cover" />
                 <View style={styles.imageOverlay}>
                   <Ionicons name="camera-outline" size={22} color="#fff" />
                   <Text style={styles.imageOverlayText}>החלף תמונה</Text>
@@ -168,7 +210,6 @@ export default function AddRecipeScreen() {
               onChangeText={setTitle}
               returnKeyType="next"
             />
-
             <FieldLabel text="תיאור" />
             <TextInput
               style={[styles.input, styles.inputMultiline]}
@@ -194,7 +235,6 @@ export default function AddRecipeScreen() {
               keyboardType="number-pad"
               maxLength={4}
             />
-
             <FieldLabel text="רמת קושי" />
             <View style={styles.chipRow}>
               {DIFFICULTY_OPTIONS.map(({ value, label, color }) => {
@@ -202,16 +242,11 @@ export default function AddRecipeScreen() {
                 return (
                   <TouchableOpacity
                     key={value}
-                    style={[
-                      styles.chip,
-                      active && { backgroundColor: color, borderColor: color },
-                    ]}
+                    style={[styles.chip, active && { backgroundColor: color, borderColor: color }]}
                     onPress={() => setDifficulty(active ? null : value)}
                     activeOpacity={0.75}
                   >
-                    <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-                      {label}
-                    </Text>
+                    <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>{label}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -222,8 +257,6 @@ export default function AddRecipeScreen() {
           <SectionCard label="קטגוריות">
             {categoriesLoading ? (
               <ActivityIndicator color={Colors.primary} style={styles.loader} />
-            ) : categoriesError ? (
-              <Text style={styles.errorText}>{categoriesError}</Text>
             ) : (
               <View style={styles.categoriesWrap}>
                 {categories.map(cat => {
@@ -235,9 +268,7 @@ export default function AddRecipeScreen() {
                       onPress={() => toggleCategory(cat.id)}
                       activeOpacity={0.75}
                     >
-                      {cat.icon ? (
-                        <Text style={styles.categoryIcon}>{cat.icon}</Text>
-                      ) : null}
+                      {cat.icon ? <Text style={styles.categoryIcon}>{cat.icon}</Text> : null}
                       <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
                         {cat.name_he}
                       </Text>
@@ -252,11 +283,7 @@ export default function AddRecipeScreen() {
           <SectionCard label="מרכיבים">
             {ingredients.map((ingredient, index) => (
               <View key={index} style={styles.listRow}>
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => removeIngredient(index)}
-                  activeOpacity={0.7}
-                >
+                <TouchableOpacity style={styles.deleteButton} onPress={() => removeIngredient(index)} activeOpacity={0.7}>
                   <Ionicons name="trash-outline" size={18} color={Colors.textSecondary} />
                 </TouchableOpacity>
                 <TextInput
@@ -283,11 +310,7 @@ export default function AddRecipeScreen() {
           <SectionCard label="שלבי הכנה">
             {steps.map((step, index) => (
               <View key={index} style={styles.listRow}>
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => removeStep(index)}
-                  activeOpacity={0.7}
-                >
+                <TouchableOpacity style={styles.deleteButton} onPress={() => removeStep(index)} activeOpacity={0.7}>
                   <Ionicons name="trash-outline" size={18} color={Colors.textSecondary} />
                 </TouchableOpacity>
                 <View style={styles.stepInputWrap}>
@@ -329,13 +352,13 @@ export default function AddRecipeScreen() {
               </>
             ) : (
               <>
-                <Text style={styles.saveButtonText}>שמור מתכון</Text>
+                <Text style={styles.saveButtonText}>שמור שינויים</Text>
                 <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
               </>
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.3.1</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.4.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -345,24 +368,11 @@ export default function AddRecipeScreen() {
 
 // ── Sub-components ────────────────────────────────────────────
 
-function SectionCard({
-  label,
-  badge,
-  children,
-}: {
-  label: string;
-  badge?: string;
-  children: React.ReactNode;
-}) {
+function SectionCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={styles.sectionCard}>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionLabel}>{label}</Text>
-        {badge ? (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{badge}</Text>
-          </View>
-        ) : null}
       </View>
       {children}
     </View>
@@ -376,29 +386,29 @@ function FieldLabel({ text }: { text: string }) {
 // ── Styles ────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  flex: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 40,
-  },
+  safeArea:     { flex: 1, backgroundColor: Colors.background },
+  flex:         { flex: 1 },
+  centerContent:{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  errorText:    { fontSize: 15, color: '#C0392B', textAlign: 'center' },
+  scrollContent:{ paddingHorizontal: 16, paddingBottom: 40 },
 
-  header: {
-    flexDirection: 'row',
+  topBar: {
+    flexDirection: 'row-reverse',
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 8,
-    paddingVertical: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
   },
-  headerTitle: {
-    fontSize: 24,
+  topBarButton: { padding: 4 },
+  topBarTitle: {
+    flex: 1,
+    fontSize: 17,
     fontWeight: '700',
     color: Colors.textPrimary,
+    textAlign: 'right',
+    marginHorizontal: 8,
   },
 
   sectionCard: {
@@ -423,18 +433,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
 
-  badge: {
-    backgroundColor: Colors.primaryLight,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  badgeText: {
-    fontSize: 11,
-    color: Colors.primary,
-    fontWeight: '600',
-  },
-
   fieldLabel: {
     fontSize: 13,
     fontWeight: '600',
@@ -456,20 +454,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     textAlign: 'right',
   },
-  inputMultiline: {
-    minHeight: 80,
-    paddingTop: 11,
-  },
-  inputNarrow: {
-    width: 120,
-    alignSelf: 'flex-end',
-  },
+  inputMultiline: { minHeight: 80, paddingTop: 11 },
+  inputNarrow:    { width: 120, alignSelf: 'flex-end' },
 
-  chipRow: {
-    flexDirection: 'row-reverse',
-    gap: 8,
-    marginTop: 2,
-  },
+  chipRow: { flexDirection: 'row-reverse', gap: 8, marginTop: 2 },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -481,79 +469,22 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     backgroundColor: Colors.background,
   },
-  chipActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  chipLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: Colors.textSecondary,
-  },
-  chipLabelActive: {
-    color: '#fff',
-    fontWeight: '600',
-  },
+  chipActive:      { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipLabel:       { fontSize: 13, fontWeight: '500', color: Colors.textSecondary },
+  chipLabelActive: { color: '#fff', fontWeight: '600' },
 
-  categoriesWrap: {
-    flexDirection: 'row-reverse',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingVertical: 4,
-  },
+  categoriesWrap: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 8, paddingVertical: 4 },
+  categoryIcon:   { fontSize: 14 },
 
-  categoryIcon: {
-    fontSize: 14,
-  },
+  listRow:      { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: 8, marginBottom: 4 },
+  listInput:    { flex: 1 },
+  deleteButton: { paddingTop: 13, paddingHorizontal: 4 },
+  stepInputWrap:{ flex: 1, flexDirection: 'row-reverse', alignItems: 'flex-start', gap: 6 },
+  stepNumber:   { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, paddingTop: 13, minWidth: 20, textAlign: 'right' },
+  addRowButton: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, paddingVertical: 8, alignSelf: 'flex-end' },
+  addRowLabel:  { fontSize: 14, color: Colors.primary, fontWeight: '600' },
 
-  // ── Dynamic list rows ──
-  listRow: {
-    flexDirection: 'row-reverse',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 4,
-  },
-  listInput: {
-    flex: 1,
-  },
-  deleteButton: {
-    paddingTop: 13,
-    paddingHorizontal: 4,
-  },
-  stepInputWrap: {
-    flex: 1,
-    flexDirection: 'row-reverse',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  stepNumber: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-    paddingTop: 13,
-    minWidth: 20,
-    textAlign: 'right',
-  },
-  addRowButton: {
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    alignSelf: 'flex-end',
-  },
-  addRowLabel: {
-    fontSize: 14,
-    color: Colors.primary,
-    fontWeight: '600',
-  },
-
-  loader: {
-    marginVertical: 12,
-  },
-  errorText: {
-    fontSize: 13,
-    color: '#C0392B',
-  },
+  loader:    { marginVertical: 12 },
 
   saveButton: {
     flexDirection: 'row',
@@ -565,22 +496,11 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     marginTop: 8,
   },
-  saveButtonDisabled: {
-    opacity: 0.4,
-  },
-  saveButtonText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  versionLabel: {
-    marginTop: 20,
-    textAlign: 'center',
-    fontSize: 11,
-    color: '#C0C0C0',
-  },
+  saveButtonDisabled: { opacity: 0.4 },
+  saveButtonText:     { fontSize: 17, fontWeight: '700', color: '#fff' },
 
-  // ── Image picker ──
+  versionLabel: { marginTop: 20, textAlign: 'center', fontSize: 11, color: '#C0C0C0' },
+
   imagePicker: {
     height: 180,
     borderRadius: 16,
@@ -589,10 +509,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  imagePreview: {
-    width: '100%',
-    height: '100%',
-  },
+  imagePreview: { width: '100%', height: '100%' },
   imageOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.35)',
@@ -600,20 +517,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
   },
-  imageOverlayText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  imagePlaceholder: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  imagePlaceholderText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
+  imageOverlayText:    { color: '#fff', fontSize: 14, fontWeight: '600' },
+  imagePlaceholder:    { flex: 1, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  imagePlaceholderText:{ fontSize: 14, color: Colors.textSecondary },
 });

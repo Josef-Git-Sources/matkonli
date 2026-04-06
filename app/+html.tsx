@@ -1,10 +1,9 @@
 import { ScrollViewStyleReset } from 'expo-router/html';
 import type { PropsWithChildren } from 'react';
 
-// Sets dir="rtl" on the HTML root for web — required for Hebrew RTL support.
 export default function Root({ children }: PropsWithChildren) {
   return (
-    <html lang="he" dir="rtl">
+    <html>
       <head>
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
