@@ -138,7 +138,14 @@ type TimerStatus = 'idle' | 'running' | 'paused' | 'finished';
 
 function formatTime(totalSecs: number): string {
   const s = Math.max(0, totalSecs);
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return (
+    `${String(h).padStart(2, '0')}:` +
+    `${String(m).padStart(2, '0')}:` +
+    `${String(sec).padStart(2, '0')}`
+  );
 }
 
 /**
@@ -309,7 +316,7 @@ export default function RecipeDetailScreen() {
 
   function timerAdjust(deltaSecs: number) {
     if (timerStatus !== 'idle') return;
-    const next = Math.max(0, Math.min(5999, timerTotal + deltaSecs));
+    const next = Math.max(0, Math.min(359999, timerTotal + deltaSecs)); // max 99:59:59
     setTimerTotal(next);
     setTimerLeft(next);
   }
@@ -396,7 +403,7 @@ export default function RecipeDetailScreen() {
         ]}>
           <Ionicons name="timer-outline" size={14} color="#fff" />
           <Text style={styles.timerStickyTime}>
-            {timerStatus === 'finished' ? '00:00' : formatTime(timerLeft)}
+            {timerStatus === 'finished' ? '00:00:00' : formatTime(timerLeft)}
           </Text>
           <Text style={styles.timerStickyLabel}>
             {timerStatus === 'running'  ? ' · פעיל'   :
@@ -582,12 +589,16 @@ export default function RecipeDetailScreen() {
             {timerStatus === 'idle' && (
               <View style={styles.timerAdjRow}>
                 {[
-                  { label: '+5m', delta: 300  },
-                  { label: '+1m', delta:  60  },
-                  { label: '+30s',delta:  30  },
-                  { label: '-30s',delta: -30  },
-                  { label: '-1m', delta: -60  },
-                  { label: '-5m', delta: -300 },
+                  // Array order is reversed visually by row-reverse.
+                  // Index 0 → rightmost (+1h), last index → leftmost (-1h).
+                  { label: '+1h', delta:  3600 },
+                  { label: '+5m', delta:   300 },
+                  { label: '+1m', delta:    60 },
+                  { label: '+30s',delta:    30 },
+                  { label: '-30s',delta:   -30 },
+                  { label: '-1m', delta:   -60 },
+                  { label: '-5m', delta:  -300 },
+                  { label: '-1h', delta: -3600 },
                 ].map(({ label, delta }) => (
                   <TouchableOpacity
                     key={label}
@@ -701,7 +712,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.15.0</Text>
+          <Text style={styles.versionLabel}>v1.15.1</Text>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -1094,10 +1105,10 @@ const styles = StyleSheet.create({
     marginVertical: 12,
   },
   timerDisplay: {
-    fontSize: 60,
+    fontSize: 48,
     fontWeight: '700',
     color: Colors.textSecondary,
-    letterSpacing: 3,
+    letterSpacing: 2,
   },
   timerDisplayRunning:  { color: '#2A7E4F' },
   timerDisplayFinished: { color: '#C0392B' },
