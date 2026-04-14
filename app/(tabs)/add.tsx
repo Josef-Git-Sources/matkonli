@@ -502,7 +502,7 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.14.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.15.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>

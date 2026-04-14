@@ -290,7 +290,7 @@ export default function SearchScreen() {
           }
           ListFooterComponent={
             <Text style={styles.versionLabel}>
-              {filteredRecipes.length} תוצאות · v1.14.0
+              {filteredRecipes.length} תוצאות · v1.15.0
             </Text>
           }
         />

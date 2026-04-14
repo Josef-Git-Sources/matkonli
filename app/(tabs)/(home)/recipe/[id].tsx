@@ -11,10 +11,12 @@ import {
   StyleSheet,
   Platform,
   Dimensions,
+  Animated,
+  Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
@@ -130,6 +132,44 @@ const DIFFICULTY_COLOR: Record<DifficultyLevel, string> = {
   hard:   '#C0392B',
 };
 
+// ── Timer helpers ─────────────────────────────────────────────
+
+type TimerStatus = 'idle' | 'running' | 'paused' | 'finished';
+
+function formatTime(totalSecs: number): string {
+  const s = Math.max(0, totalSecs);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Plays 3 short beeps on web via AudioContext, or vibrates on native.
+ * Fails silently if AudioContext is unavailable.
+ */
+function playTimerAlert() {
+  if (Platform.OS === 'web') {
+    try {
+      const ACtx =
+        (window as any).AudioContext ?? (window as any).webkitAudioContext;
+      if (!ACtx) return;
+      const ctx = new ACtx() as AudioContext;
+      for (let i = 0; i < 3; i++) {
+        const t   = ctx.currentTime + i * 0.65;
+        const osc = ctx.createOscillator();
+        const g   = ctx.createGain();
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.frequency.value = 880;
+        g.gain.setValueAtTime(0.3, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc.start(t);
+        osc.stop(t + 0.5);
+      }
+    } catch { /* AudioContext not available */ }
+  } else {
+    Vibration.vibrate([0, 300, 150, 300, 150, 600]);
+  }
+}
+
 // ── Screen ────────────────────────────────────────────────────
 
 const SCREEN = Dimensions.get('window');
@@ -146,6 +186,15 @@ export default function RecipeDetailScreen() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting]               = useState(false);
   const [multiplier, setMultiplier]               = useState(1);
+
+  // ── Timer state ──────────────────────────────────────────────
+  const [timerTotal,  setTimerTotal]  = useState(0);           // user-set duration (seconds)
+  const [timerLeft,   setTimerLeft]   = useState(0);           // remaining seconds
+  const [timerStatus, setTimerStatus] = useState<TimerStatus>('idle');
+  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finishCbRef   = useRef<() => void>(() => {});
+  const pulseAnim     = useRef(new Animated.Value(1)).current;
+  const pulseLoopRef  = useRef<Animated.CompositeAnimation | null>(null);
 
   async function handleToggleFavorite() {
     if (!recipe) return;
@@ -214,6 +263,75 @@ export default function RecipeDetailScreen() {
     }, [id])
   );
 
+  // Seed the timer from prep_time once (only while idle and not yet set)
+  useEffect(() => {
+    if (recipe?.prep_time && timerStatus === 'idle' && timerTotal === 0) {
+      const secs = recipe.prep_time * 60;
+      setTimerTotal(secs);
+      setTimerLeft(secs);
+    }
+  }, [recipe?.prep_time, timerStatus, timerTotal]);
+
+  // Run / pause the countdown interval based on timerStatus
+  useEffect(() => {
+    if (timerStatus === 'running') {
+      intervalRef.current = setInterval(() => {
+        setTimerLeft(prev => {
+          if (prev <= 1) {
+            clearInterval(intervalRef.current!);
+            finishCbRef.current();   // always calls the latest version
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    }
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [timerStatus]);
+
+  // Keep the finish callback ref up-to-date (avoids stale closure inside setInterval)
+  finishCbRef.current = useCallback(() => {
+    setTimerStatus('finished');
+    playTimerAlert();
+    pulseLoopRef.current = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.12, duration: 380, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0,  duration: 380, useNativeDriver: true }),
+      ])
+    );
+    pulseLoopRef.current.start();
+    Alert.alert('⏰ הטיימר הסתיים!', 'זמן הבישול הסתיים. בתאבון! 😊', [{ text: 'סגור' }]);
+  }, [pulseAnim]);
+
+  function timerAdjust(deltaSecs: number) {
+    if (timerStatus !== 'idle') return;
+    const next = Math.max(0, Math.min(5999, timerTotal + deltaSecs));
+    setTimerTotal(next);
+    setTimerLeft(next);
+  }
+
+  function timerStart() {
+    if (timerLeft <= 0) return;
+    pulseLoopRef.current?.stop();
+    pulseAnim.setValue(1);
+    setTimerStatus('running');
+  }
+
+  function timerPause() {
+    setTimerStatus('paused');
+  }
+
+  function timerReset() {
+    pulseLoopRef.current?.stop();
+    pulseAnim.setValue(1);
+    setTimerStatus('idle');
+    setTimerLeft(timerTotal);
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
 
@@ -268,6 +386,25 @@ export default function RecipeDetailScreen() {
           )}
         </View>
       </View>
+
+      {/* ── Sticky timer bar (visible whenever timer is not idle) ── */}
+      {timerStatus !== 'idle' && (
+        <View style={[
+          styles.timerStickyBar,
+          timerStatus === 'paused'   && styles.timerStickyBarPaused,
+          timerStatus === 'finished' && styles.timerStickyBarFinished,
+        ]}>
+          <Ionicons name="timer-outline" size={14} color="#fff" />
+          <Text style={styles.timerStickyTime}>
+            {timerStatus === 'finished' ? '00:00' : formatTime(timerLeft)}
+          </Text>
+          <Text style={styles.timerStickyLabel}>
+            {timerStatus === 'running'  ? ' · פעיל'   :
+             timerStatus === 'paused'   ? ' · מושהה'  :
+             ' · ⏰ הסתיים!'}
+          </Text>
+        </View>
+      )}
 
       {isLoading ? (
         <View style={styles.centerContent}>
@@ -403,6 +540,116 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
+          {/* ── Cooking Timer ── */}
+          <View style={styles.section}>
+            {/* Header */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>טיימר בישול</Text>
+              <View style={{ flexDirection: 'row-reverse', alignItems: 'center', gap: 8 }}>
+                {timerStatus !== 'idle' && (
+                  <View style={[
+                    styles.timerBadge,
+                    timerStatus === 'running'  && styles.timerBadgeRunning,
+                    timerStatus === 'paused'   && styles.timerBadgePaused,
+                    timerStatus === 'finished' && styles.timerBadgeFinished,
+                  ]}>
+                    <Text style={[
+                      styles.timerBadgeText,
+                      timerStatus === 'running'  && { color: '#2A7E4F' },
+                      timerStatus === 'paused'   && { color: '#E8901A' },
+                      timerStatus === 'finished' && { color: '#C0392B' },
+                    ]}>
+                      {timerStatus === 'running' ? 'פעיל' : timerStatus === 'paused' ? 'מושהה' : 'הסתיים'}
+                    </Text>
+                  </View>
+                )}
+                <Ionicons name="timer-outline" size={20} color={Colors.primary} />
+              </View>
+            </View>
+
+            {/* Large countdown display */}
+            <Animated.View style={[styles.timerDisplayWrap, { transform: [{ scale: pulseAnim }] }]}>
+              <Text style={[
+                styles.timerDisplay,
+                timerStatus === 'running'  && styles.timerDisplayRunning,
+                timerStatus === 'finished' && styles.timerDisplayFinished,
+              ]}>
+                {formatTime(timerLeft)}
+              </Text>
+            </Animated.View>
+
+            {/* Adjustment buttons — only when idle */}
+            {timerStatus === 'idle' && (
+              <View style={styles.timerAdjRow}>
+                {[
+                  { label: '+5m', delta: 300  },
+                  { label: '+1m', delta:  60  },
+                  { label: '+30s',delta:  30  },
+                  { label: '-30s',delta: -30  },
+                  { label: '-1m', delta: -60  },
+                  { label: '-5m', delta: -300 },
+                ].map(({ label, delta }) => (
+                  <TouchableOpacity
+                    key={label}
+                    style={styles.timerAdjBtn}
+                    onPress={() => timerAdjust(delta)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.timerAdjBtnText}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {/* Action buttons */}
+            <View style={styles.timerCtrlRow}>
+              {(timerStatus === 'idle' || timerStatus === 'paused') && (
+                <TouchableOpacity
+                  style={[
+                    styles.timerCtrlBtn, styles.timerCtrlBtnStart,
+                    timerLeft === 0 && styles.timerCtrlBtnDisabled,
+                  ]}
+                  onPress={timerStart}
+                  disabled={timerLeft === 0}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="play" size={16} color="#fff" />
+                  <Text style={styles.timerCtrlBtnText}>
+                    {timerStatus === 'paused' ? 'המשך' : 'התחל'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {timerStatus === 'running' && (
+                <TouchableOpacity
+                  style={[styles.timerCtrlBtn, styles.timerCtrlBtnPause]}
+                  onPress={timerPause}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="pause" size={16} color={Colors.textPrimary} />
+                  <Text style={[styles.timerCtrlBtnText, { color: Colors.textPrimary }]}>השהה</Text>
+                </TouchableOpacity>
+              )}
+
+              {timerStatus !== 'idle' && (
+                <TouchableOpacity
+                  style={[styles.timerCtrlBtn, styles.timerCtrlBtnReset]}
+                  onPress={timerReset}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="refresh" size={16} color={Colors.textSecondary} />
+                  <Text style={[styles.timerCtrlBtnText, { color: Colors.textSecondary }]}>אפס</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {timerStatus === 'finished' && (
+              <View style={styles.timerFinishedBanner}>
+                <Text style={styles.timerFinishedText}>⏰ הטיימר הסתיים! בתאבון! 😊</Text>
+              </View>
+            )}
+          </View>
+
           {/* ── Ingredients ── */}
           {recipe.ingredients.length > 0 ? (
             <View style={styles.section}>
@@ -454,7 +701,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.14.0</Text>
+          <Text style={styles.versionLabel}>v1.15.0</Text>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -815,5 +1062,120 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#C0C0C0',
     marginTop: 16,
+  },
+
+  // ── Sticky timer bar ──────────────────────────────────────────
+  timerStickyBar: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#2A7E4F',
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+  },
+  timerStickyBarPaused:   { backgroundColor: '#E8901A' },
+  timerStickyBarFinished: { backgroundColor: '#C0392B' },
+  timerStickyTime: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 1,
+  },
+  timerStickyLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.85)',
+  },
+
+  // ── Timer section card internals ──────────────────────────────
+  timerDisplayWrap: {
+    alignItems: 'center',
+    marginVertical: 12,
+  },
+  timerDisplay: {
+    fontSize: 60,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    letterSpacing: 3,
+  },
+  timerDisplayRunning:  { color: '#2A7E4F' },
+  timerDisplayFinished: { color: '#C0392B' },
+
+  timerBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  timerBadgeRunning:  { backgroundColor: '#2A7E4F15', borderColor: '#2A7E4F80' },
+  timerBadgePaused:   { backgroundColor: '#E8901A15', borderColor: '#E8901A80' },
+  timerBadgeFinished: { backgroundColor: '#C0392B15', borderColor: '#C0392B80' },
+  timerBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+
+  timerAdjRow: {
+    flexDirection: 'row-reverse',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  timerAdjBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  timerAdjBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+
+  timerCtrlRow: {
+    flexDirection: 'row-reverse',
+    gap: 10,
+  },
+  timerCtrlBtn: {
+    flex: 1,
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  timerCtrlBtnStart:    { backgroundColor: Colors.primary },
+  timerCtrlBtnPause:    { backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
+  timerCtrlBtnReset:    { backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border },
+  timerCtrlBtnDisabled: { opacity: 0.4 },
+  timerCtrlBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  timerFinishedBanner: {
+    marginTop: 12,
+    backgroundColor: '#C0392B12',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#C0392B40',
+  },
+  timerFinishedText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#C0392B',
+    textAlign: 'center',
   },
 });
