@@ -15,12 +15,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { fetchCategories, saveRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
 import { MicButton, SpeechToast } from '@/components/MicButton';
+import { parseRawText, extractPdfText, extractDocxText } from '@/lib/parseRecipeText';
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -44,6 +47,8 @@ export default function AddRecipeScreen() {
   const [steps, setSteps]               = useState<string[]>(['']);
   const [imageUri, setImageUri]         = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isImporting, setIsImporting]   = useState(false);
+  const [importedFields, setImportedFields] = useState<Set<string>>(new Set());
 
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
@@ -72,6 +77,137 @@ export default function AddRecipeScreen() {
     });
     if (!result.canceled) {
       setImageUri(result.assets[0].uri);
+    }
+  }
+
+  async function handleImportFromFile() {
+    let result: DocumentPicker.DocumentPickerResult;
+    try {
+      result = await DocumentPicker.getDocumentAsync({
+        type: ['text/plain', 'application/pdf',
+               'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        copyToCacheDirectory: true,
+      });
+    } catch (err: any) {
+      console.error('[Import] DocumentPicker error:', err);
+      Alert.alert('שגיאה', 'לא ניתן לפתוח את בוחר הקבצים.');
+      return;
+    }
+
+    console.log('[Import] File selected:', JSON.stringify(result, null, 2));
+
+    if (result.canceled || !result.assets?.length) {
+      console.log('[Import] Cancelled or no assets');
+      return;
+    }
+
+    const asset = result.assets[0];
+    setIsImporting(true);
+
+    try {
+      const mime = asset.mimeType ?? '';
+      const uri  = asset.uri;
+      console.log('[Import] Asset — name:', asset.name, '| mime:', mime, '| uri:', uri);
+
+      // ── Read raw bytes as text ─────────────────────────────
+      let rawContent = '';
+
+      if (Platform.OS === 'web') {
+        // On web, `asset.file` is the native browser File object.
+        // FileReader is the only reliable way to read it — expo-file-system
+        // is a no-op on web and silently returns nothing.
+        const webFile = (asset as any).file as File | undefined;
+        if (webFile) {
+          rawContent = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload  = (e) => resolve((e.target?.result as string) ?? '');
+            reader.onerror = ()  => reject(new Error('FileReader נכשל'));
+            reader.readAsText(webFile, 'utf-8');
+          });
+        } else {
+          // Fallback: fetch the blob/object URL the picker provided
+          const response = await fetch(uri);
+          rawContent = await response.text();
+        }
+      } else {
+        // Native (iOS / Android)
+        rawContent = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      }
+
+      console.log('[Import] Raw content length:', rawContent.length);
+      console.log('[Import] Raw content preview:', rawContent.slice(0, 200));
+
+      // ── Format-specific extraction ─────────────────────────
+      let rawText = rawContent;
+
+      if (mime === 'application/pdf' || asset.name?.endsWith('.pdf')) {
+        rawText = extractPdfText(rawContent);
+        console.log('[Import] PDF extracted text:', rawText.slice(0, 200));
+        if (!rawText.trim()) {
+          Alert.alert(
+            'PDF מוצפן',
+            'לא הצלחנו לחלץ טקסט מקובץ זה. נסה לשמור אותו כ-.txt ולייבא שוב.',
+          );
+          return;
+        }
+      } else if (
+        mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        asset.name?.endsWith('.docx')
+      ) {
+        rawText = extractDocxText(rawContent);
+        console.log('[Import] DOCX extracted text:', rawText.slice(0, 200));
+        if (!rawText.trim()) {
+          Alert.alert(
+            'Word לא נתמך',
+            'לא הצלחנו לקרוא את הקובץ. נסה לשמור אותו כ-.txt ולייבא שוב.',
+          );
+          return;
+        }
+      }
+      // .txt — rawText is already rawContent
+
+      if (!rawText.trim()) {
+        Alert.alert('הקובץ ריק', 'לא נמצא טקסט בקובץ שנבחר.');
+        return;
+      }
+
+      // ── Parse & populate form ──────────────────────────────
+      const parsed = parseRawText(rawText);
+      console.log('[Import] Parsed result:', JSON.stringify(parsed, null, 2));
+
+      const filled = new Set<string>();
+
+      if (parsed.title) {
+        setTitle(parsed.title);
+        filled.add('title');
+      }
+      if (parsed.description) {
+        setDescription(parsed.description);
+        filled.add('description');
+      }
+      if (parsed.ingredients.some(s => s.trim())) {
+        setIngredients(parsed.ingredients);
+        filled.add('ingredients');
+      }
+      if (parsed.steps.some(s => s.trim())) {
+        setSteps(parsed.steps);
+        filled.add('steps');
+      }
+
+      console.log('[Import] Filled fields:', [...filled]);
+      setImportedFields(filled);
+
+      Alert.alert(
+        'יובא בהצלחה ✓',
+        `זוהו: ${[...filled].join(', ')}.\nנא לבדוק את השדות המסומנים לפני השמירה.`,
+      );
+    } catch (err: any) {
+      console.error('[Import] Error:', err);
+      Alert.alert('שגיאה בקריאת הקובץ', err.message ?? 'שגיאה לא ידועה');
+    } finally {
+      setIsImporting(false);
     }
   }
 
@@ -114,6 +250,7 @@ export default function AddRecipeScreen() {
       setIngredients(['']);
       setSteps(['']);
       setImageUri(null);
+      setImportedFields(new Set());
       router.replace('/');
     } catch (error: any) {
       console.error('Save Error:', error);
@@ -140,8 +277,25 @@ export default function AddRecipeScreen() {
 
           {/* ── Header ── */}
           <View style={styles.header}>
-            <Ionicons name="restaurant-outline" size={22} color={Colors.primary} />
-            <Text style={styles.headerTitle}>מתכון חדש</Text>
+            <TouchableOpacity
+              style={[styles.importBtn, isImporting && styles.importBtnDisabled]}
+              onPress={handleImportFromFile}
+              disabled={isImporting}
+              activeOpacity={0.8}
+            >
+              {isImporting ? (
+                <ActivityIndicator size="small" color={Colors.primary} />
+              ) : (
+                <Ionicons name="document-text-outline" size={17} color={Colors.primary} />
+              )}
+              <Text style={styles.importBtnLabel}>
+                {isImporting ? 'טוען...' : 'טען מקובץ'}
+              </Text>
+            </TouchableOpacity>
+            <View style={styles.headerTitleRow}>
+              <Ionicons name="restaurant-outline" size={22} color={Colors.primary} />
+              <Text style={styles.headerTitle}>מתכון חדש</Text>
+            </View>
           </View>
 
           {/* ══ IMAGE PICKER ══ */}
@@ -163,24 +317,24 @@ export default function AddRecipeScreen() {
           </TouchableOpacity>
 
           {/* ══ SECTION: Recipe Details ══ */}
-          <SectionCard label="פרטי המתכון">
+          <SectionCard label="פרטי המתכון" importHighlight={importedFields.has('title') || importedFields.has('description')}>
             <FieldLabel text="כותרת *" />
             <TextInput
-              style={styles.input}
+              style={[styles.input, importedFields.has('title') && styles.inputHighlighted]}
               placeholder="למשל: עוגת שוקולד של סבתא"
               placeholderTextColor={Colors.textSecondary}
               value={title}
-              onChangeText={setTitle}
+              onChangeText={t => { setTitle(t); setImportedFields(p => { const n = new Set(p); n.delete('title'); return n; }); }}
               returnKeyType="next"
             />
 
             <FieldLabel text="תיאור" />
             <TextInput
-              style={[styles.input, styles.inputMultiline]}
+              style={[styles.input, styles.inputMultiline, importedFields.has('description') && styles.inputHighlighted]}
               placeholder="ספר קצת על המתכון..."
               placeholderTextColor={Colors.textSecondary}
               value={description}
-              onChangeText={setDescription}
+              onChangeText={t => { setDescription(t); setImportedFields(p => { const n = new Set(p); n.delete('description'); return n; }); }}
               multiline
               numberOfLines={3}
               textAlignVertical="top"
@@ -254,7 +408,7 @@ export default function AddRecipeScreen() {
           </SectionCard>
 
           {/* ══ SECTION: Ingredients ══ */}
-          <SectionCard label="מרכיבים">
+          <SectionCard label="מרכיבים" importHighlight={importedFields.has('ingredients')}>
             {ingredients.map((ingredient, index) => (
               <View key={index} style={styles.listRow}>
                 <TouchableOpacity
@@ -289,7 +443,7 @@ export default function AddRecipeScreen() {
           </SectionCard>
 
           {/* ══ SECTION: Steps ══ */}
-          <SectionCard label="שלבי הכנה">
+          <SectionCard label="שלבי הכנה" importHighlight={importedFields.has('steps')}>
             {steps.map((step, index) => (
               <View key={index} style={styles.listRow}>
                 <TouchableOpacity
@@ -348,7 +502,7 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.11.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.14.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -361,17 +515,24 @@ export default function AddRecipeScreen() {
 function SectionCard({
   label,
   badge,
+  importHighlight,
   children,
 }: {
   label: string;
   badge?: string;
+  importHighlight?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <View style={styles.sectionCard}>
+    <View style={[styles.sectionCard, importHighlight && styles.sectionCardHighlighted]}>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionLabel}>{label}</Text>
-        {badge ? (
+        {importHighlight ? (
+          <View style={styles.importBadge}>
+            <Ionicons name="checkmark-circle" size={12} color={Colors.primary} />
+            <Text style={styles.importBadgeText}>יובא — נא לבדוק</Text>
+          </View>
+        ) : badge ? (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{badge}</Text>
           </View>
@@ -404,14 +565,63 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 8,
+    justifyContent: 'space-between',
     paddingVertical: 20,
+  },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   headerTitle: {
     fontSize: 24,
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+
+  // ── Import button ──
+  importBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  importBtnDisabled: {
+    opacity: 0.5,
+  },
+  importBtnLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+
+  // ── Import highlight ──
+  sectionCardHighlighted: {
+    borderColor: Colors.primary,
+    borderWidth: 1.5,
+  },
+  inputHighlighted: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  importBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  importBadgeText: {
+    fontSize: 11,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 
   sectionCard: {

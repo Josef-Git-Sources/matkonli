@@ -12,8 +12,10 @@ interface TabConfig {
 }
 
 const TABS: TabConfig[] = [
-  { name: 'index',    title: 'בית',        icon: 'home-outline',     iconFocused: 'home' },
-  { name: 'search',   title: 'חיפוש',      icon: 'search-outline',   iconFocused: 'search' },
+  // (home) is a route group that contains a nested Stack (home screen + recipe detail).
+  // Using a group here keeps the tab bar visible when the user navigates into a recipe.
+  { name: '(home)',   title: 'בית',        icon: 'home-outline',     iconFocused: 'home' },
+  { name: '(search)', title: 'חיפוש',      icon: 'search-outline',   iconFocused: 'search' },
   { name: 'add',      title: 'הוסף מתכון', icon: 'add-circle-outline', iconFocused: 'add-circle' },
   { name: 'shopping', title: 'קניות',      icon: 'cart-outline',     iconFocused: 'cart' },
   { name: 'profile',  title: 'פרופיל',     icon: 'person-outline',   iconFocused: 'person' },

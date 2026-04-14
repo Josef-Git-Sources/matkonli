@@ -256,7 +256,7 @@ export default function HomeScreen() {
           <Text style={styles.emptyText}>
             עדיין אין מתכונים.{'\n'}לחץ על ה-➕ כדי להוסיף את המתכון הראשון שלך!
           </Text>
-          <Text style={styles.versionLabel}>גרסה: v1.10.2</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.14.0</Text>
         </View>
       ) : filteredRecipes.length === 0 ? (
         <View style={styles.centerContent}>
@@ -285,7 +285,7 @@ export default function HomeScreen() {
             )
           }
           ListFooterComponent={
-            <Text style={styles.versionLabel}>גרסה: v1.10.2</Text>
+            <Text style={styles.versionLabel}>גרסה: v1.14.0</Text>
           }
         />
       )}

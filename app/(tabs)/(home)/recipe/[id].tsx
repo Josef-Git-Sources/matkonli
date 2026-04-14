@@ -454,7 +454,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.11.2</Text>
+          <Text style={styles.versionLabel}>v1.14.0</Text>
         </ScrollView>
       )}
     </SafeAreaView>
