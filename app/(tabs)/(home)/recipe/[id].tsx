@@ -339,12 +339,24 @@ export default function RecipeDetailScreen() {
     setTimerLeft(timerTotal);
   }
 
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.push('/');
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
 
       {/* ── Top bar ── */}
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.topBarButton} activeOpacity={0.7}>
+        <TouchableOpacity
+          onPress={handleBack}
+          style={styles.topBarButton}
+          activeOpacity={0.7}
+        >
           <Ionicons name="chevron-forward" size={26} color={Colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.topBarTitle} numberOfLines={1}>
@@ -712,7 +724,7 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.15.1</Text>
+          <Text style={styles.versionLabel}>v1.16.2</Text>
         </ScrollView>
       )}
     </SafeAreaView>

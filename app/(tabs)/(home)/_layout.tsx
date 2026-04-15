@@ -2,10 +2,16 @@ import { Stack } from 'expo-router';
 
 /**
  * Stack navigator for the Home tab.
- * Wrapping the home screen and recipe detail in a Stack keeps the bottom
- * tab bar visible when the user drills into a recipe — the tab bar is owned
- * by the parent Tabs navigator and stays mounted throughout.
+ * Declaring screens explicitly keeps the initial route unambiguous and
+ * ensures that tapping the Home tab icon while inside a recipe correctly
+ * pops back to the list (React Navigation's default "pop-to-top on active
+ * tab press" behaviour works reliably when the stack is fully declared).
  */
 export default function HomeStack() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" />
+      <Stack.Screen name="recipe/[id]" />
+    </Stack>
+  );
 }

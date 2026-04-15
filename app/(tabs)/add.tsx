@@ -11,6 +11,7 @@ import {
   Alert,
   StyleSheet,
 } from 'react-native';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
@@ -24,6 +25,120 @@ import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
 import { MicButton, SpeechToast } from '@/components/MicButton';
 import { parseRawText, extractPdfText, extractDocxText } from '@/lib/parseRecipeText';
+
+// ── URL-import helpers ────────────────────────────────────────
+
+/** Strips HTML tags and decodes common HTML entities. */
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&#(\d+);/gi,        (_, n) => String.fromCharCode(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g,  '&')
+    .replace(/&lt;/g,   '<')
+    .replace(/&gt;/g,   '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/<[^>]+>/g, '')   // strip any remaining inline tags
+    .trim();
+}
+
+type RecipeParsed = {
+  title:       string;
+  description: string;
+  ingredients: string[];
+  steps:       string[];
+};
+
+/**
+ * Scans every <script type="application/ld+json"> block in the HTML string.
+ * Returns the first object whose @type includes "Recipe", or null if none found.
+ * Handles @graph arrays, root arrays, HowToStep, and HowToSection structures.
+ */
+function extractRecipeFromJsonLd(html: string): RecipeParsed | null {
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  let blockIndex = 0;
+
+  while ((m = re.exec(html)) !== null) {
+    blockIndex++;
+    let data: any;
+    try {
+      data = JSON.parse(m[1]);
+    } catch (parseErr) {
+      console.log(`[JSON-LD] Block #${blockIndex}: JSON parse failed →`, parseErr);
+      continue;
+    }
+
+    // ── Normalise to a flat array of candidate nodes ──────────
+    // Sites may use:
+    //   • { "@graph": [...] }           (Yoast SEO / WordPress)
+    //   • [ {...}, {...} ]              (root-level array)
+    //   • { "@type": "Recipe", ... }   (single object)
+    const nodes: any[] = data?.['@graph']
+      ? data['@graph']
+      : Array.isArray(data) ? data : [data];
+
+    console.log(
+      `[JSON-LD] Block #${blockIndex}: ${nodes.length} node(s),`,
+      'types →', nodes.map((n: any) => n?.['@type']),
+    );
+
+    const recipe = nodes.find((n: any) => {
+      const t = n?.['@type'];
+      return t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'));
+    });
+
+    if (!recipe) {
+      console.log(`[JSON-LD] Block #${blockIndex}: no Recipe node — skipping`);
+      continue;
+    }
+
+    console.log(`[JSON-LD] Block #${blockIndex}: Recipe found ✓`);
+
+    const title       = decodeHtmlEntities(recipe.name ?? recipe.headline ?? '');
+    const description = decodeHtmlEntities(
+      typeof recipe.description === 'string' ? recipe.description : ''
+    );
+
+    const ingredients: string[] = (recipe.recipeIngredient ?? [])
+      .map((s: any) => decodeHtmlEntities(String(s)))
+      .filter(Boolean);
+
+    // recipeInstructions: plain string | HowToStep[] | HowToSection[]
+    const rawInstr = recipe.recipeInstructions;
+    const steps: string[] = [];
+
+    if (typeof rawInstr === 'string') {
+      steps.push(...rawInstr.split(/\n+/).map(decodeHtmlEntities).filter(Boolean));
+    } else if (Array.isArray(rawInstr)) {
+      for (const item of rawInstr) {
+        if (typeof item === 'string') {
+          const t = decodeHtmlEntities(item); if (t) steps.push(t);
+        } else if (item['@type'] === 'HowToStep') {
+          const t = decodeHtmlEntities(item.text ?? item.name ?? ''); if (t) steps.push(t);
+        } else if (item['@type'] === 'HowToSection') {
+          for (const sub of item.itemListElement ?? []) {
+            const t = decodeHtmlEntities(sub.text ?? sub.name ?? ''); if (t) steps.push(t);
+          }
+        }
+      }
+    }
+
+    console.log(
+      `[JSON-LD] Extracted — title: "${title}" | ingredients: ${ingredients.length} | steps: ${steps.length}`
+    );
+
+    if (title || ingredients.length > 0 || steps.length > 0) {
+      return { title, description, ingredients, steps };
+    }
+
+    console.log(`[JSON-LD] Block #${blockIndex}: Recipe node empty — continuing search`);
+  }
+
+  console.log(`[JSON-LD] Scanned ${blockIndex} block(s) — no usable Recipe found`);
+  return null;
+}
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -46,9 +161,14 @@ export default function AddRecipeScreen() {
   const [ingredients, setIngredients]   = useState<string[]>(['']);
   const [steps, setSteps]               = useState<string[]>(['']);
   const [imageUri, setImageUri]         = useState<string | null>(null);
+  const [ocrImages, setOcrImages]       = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isImporting, setIsImporting]   = useState(false);
+  const [isProcessingOcr, setIsProcessingOcr] = useState(false);
   const [importedFields, setImportedFields] = useState<Set<string>>(new Set());
+
+  const [urlInput,       setUrlInput]       = useState('');
+  const [isImportingUrl, setIsImportingUrl] = useState(false);
 
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
@@ -77,6 +197,146 @@ export default function AddRecipeScreen() {
     });
     if (!result.canceled) {
       setImageUri(result.assets[0].uri);
+    }
+  }
+
+  async function pickOcrImages() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה לגלריה כדי לסרוק תמונות.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      setOcrImages(prev => [...prev, ...result.assets.map(a => a.uri)]);
+    }
+  }
+
+  function removeOcrImage(index: number) {
+    setOcrImages(prev => prev.filter((_, i) => i !== index));
+  }
+
+  async function processOcrImages(images: string[]) {
+    if (images.length === 0) {
+      Alert.alert('שגיאה', 'לא נבחרו תמונות לסריקה.');
+      return;
+    }
+
+    if (!process.env.EXPO_PUBLIC_GEMINI_API_KEY) {
+      Alert.alert('שגיאת הגדרות', 'מפתח ה-API של Gemini חסר. בדוק את קובץ ה-.env.local.');
+      return;
+    }
+
+    setIsProcessingOcr(true);
+    try {
+      // ── 1. Convert each image URI to Base64 (web-compatible) ────────────
+      // FileSystem.readAsStringAsync fails on blob: URIs in a web/Codespace
+      // context, so we use fetch → FileReader which works on all platforms.
+      const uriToBase64 = (uri: string): Promise<string> =>
+        fetch(uri)
+          .then(res => res.blob())
+          .then(
+            blob =>
+              new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                  const base64data = (reader.result as string).split(',')[1];
+                  resolve(base64data);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              }),
+          );
+
+      const imageParts: { inlineData: { data: string; mimeType: string } }[] = [];
+      for (const uri of images) {
+        const base64 = await uriToBase64(uri);
+        imageParts.push({ inlineData: { data: base64, mimeType: 'image/jpeg' } });
+      }
+
+      // ── 2. Initialize Gemini and send all images in one request ──────────
+      const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+      const prompt =
+        'לפניך תמונות של מתכון. חלץ טקסט בעברית, הסר כפילויות בין התמונות, ' +
+        'והחזר אך ורק אובייקט JSON חוקי עם המפתחות: title, ingredients, steps.';
+
+      const result = await model.generateContent([...imageParts, { text: prompt }]);
+      const rawText = result.response.text().trim();
+
+      console.log('[OCR] Gemini raw response:', rawText.slice(0, 400));
+
+      // ── 3. Strip optional ```json ... ``` code fence and parse ───────────
+      const jsonStr = rawText
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```\s*$/, '')
+        .trim();
+
+      let parsed: { title?: string; ingredients?: unknown; steps?: unknown };
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        console.error('[OCR] JSON parse failed. Raw text:', rawText);
+        Alert.alert(
+          'שגיאה בעיבוד התשובה',
+          'המודל החזיר תשובה שלא ניתן לפענח כ-JSON. נסה שוב עם תמונה ברורה יותר.',
+        );
+        return;
+      }
+
+      // ── 4. Populate form fields ──────────────────────────────────────────
+      const filled = new Set<string>();
+
+      if (typeof parsed.title === 'string' && parsed.title.trim()) {
+        setTitle(parsed.title.trim());
+        filled.add('title');
+      }
+
+      const toStringArray = (val: unknown): string[] =>
+        Array.isArray(val) ? val.map(v => String(v).trim()).filter(Boolean) : [];
+
+      const parsedIngredients = toStringArray(parsed.ingredients);
+      if (parsedIngredients.length > 0) {
+        setIngredients(parsedIngredients);
+        filled.add('ingredients');
+      }
+
+      const parsedSteps = toStringArray(parsed.steps);
+      if (parsedSteps.length > 0) {
+        setSteps(parsedSteps);
+        filled.add('steps');
+      }
+
+      if (filled.size === 0) {
+        Alert.alert('לא זוהה מתכון', 'לא הצלחנו לחלץ שדות מהתמונות. נסה עם תמונה ברורה יותר.');
+        return;
+      }
+
+      setImportedFields(filled);
+
+      const fieldLabels: Record<string, string> = {
+        title: 'כותרת', ingredients: 'מרכיבים', steps: 'שלבים',
+      };
+      const filledLabel = [...filled].map(k => fieldLabels[k] ?? k).join(', ');
+      Alert.alert(
+        'הסריקה הושלמה ✓',
+        `זוהו: ${filledLabel}.\nנא לבדוק את השדות המסומנים לפני השמירה.`,
+      );
+    } catch (error: any) {
+      console.error('OCR Error:', error);
+      // Alert.alert can fail silently on web — fall back to window.alert
+      if (Platform.OS === 'web') {
+        window.alert('שגיאה בסריקה: ' + (error?.message ?? error));
+      } else {
+        Alert.alert('שגיאה בסריקה', 'לא הצלחנו לעבד את התמונות. ' + (error?.message ?? ''));
+      }
+    } finally {
+      setIsProcessingOcr(false);
     }
   }
 
@@ -211,6 +471,120 @@ export default function AddRecipeScreen() {
     }
   }
 
+  async function handleImportFromUrl() {
+    const url = urlInput.trim();
+    if (!url) {
+      Alert.alert('שגיאה', 'נא להזין כתובת URL.');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      Alert.alert('שגיאה', 'נא להזין כתובת תקינה המתחילה ב-https://');
+      return;
+    }
+
+    setIsImportingUrl(true);
+    const controller = new AbortController();
+    const timeoutId  = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      // codetabs returns the raw HTML directly — no JSON wrapper needed.
+      const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
+      console.log('[URL Import] Fetching via proxy:', proxyUrl);
+
+      const res = await fetch(proxyUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      console.log('[URL Import] Proxy HTTP status:', res.status, res.statusText);
+
+      // A 4xx/5xx from the proxy means the target site actively rejected the request
+      // (e.g. Cloudflare 403, 429 rate-limit, etc.)
+      if (!res.ok) {
+        throw new Error(
+          res.status === 403 || res.status === 401
+            ? `האתר חוסם ייבוא אוטומטי (${res.status}). אנא העתק את המתכון ידנית.`
+            : `שגיאת רשת ${res.status}. בדוק שהקישור תקין ונסה שוב.`,
+        );
+      }
+
+      const html = await res.text();
+
+      console.log('[URL Import] HTML length:', html.length);
+      console.log('[URL Import] HTML preview:', html.slice(0, 400));
+
+      if (!html.trim()) {
+        throw new Error('הפרוקסי החזיר תשובה ריקה. ייתכן שהאתר חסום.');
+      }
+
+      // Detect Cloudflare / anti-bot challenge pages that slip through as 200
+      const isChallengePage =
+        html.includes('id="challenge-') ||
+        html.includes('cf-challenge-running') ||
+        html.includes('cf_chl_opt') ||
+        (html.includes('Just a moment') && html.includes('DDoS'));
+
+      if (isChallengePage) {
+        throw new Error('האתר חוסם ייבוא אוטומטי (הגנת Cloudflare). אנא העתק את המתכון ידנית.');
+      }
+
+      // ── Primary: JSON-LD Recipe schema ────────────────────────
+      const recipe = extractRecipeFromJsonLd(html);
+
+      if (recipe) {
+        const fieldKeys    = new Set<string>();
+        const fieldLabels: string[] = [];
+
+        if (recipe.title)              { setTitle(recipe.title);             fieldKeys.add('title');       fieldLabels.push('שם מתכון'); }
+        if (recipe.description)        { setDescription(recipe.description); fieldKeys.add('description'); fieldLabels.push('תיאור');    }
+        if (recipe.ingredients.length) { setIngredients(recipe.ingredients); fieldKeys.add('ingredients'); fieldLabels.push('מרכיבים'); }
+        if (recipe.steps.length)       { setSteps(recipe.steps);             fieldKeys.add('steps');       fieldLabels.push('שלבים');   }
+
+        setImportedFields(fieldKeys);
+        setUrlInput('');
+        Alert.alert(
+          'יובא בהצלחה ✓',
+          `זוהו: ${fieldLabels.join(', ')}.\nנא לבדוק את השדות המסומנים לפני השמירה.`,
+        );
+        return;
+      }
+
+      // ── Fallback: <title> tag ──────────────────────────────────
+      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const pageTitle  = titleMatch ? decodeHtmlEntities(titleMatch[1]) : '';
+      const hasLdJson  = /<script[^>]*application\/ld\+json/i.test(html);
+
+      console.log('[URL Import] Has LD+JSON:', hasLdJson, '| page title:', pageTitle);
+
+      if (pageTitle) {
+        setTitle(pageTitle);
+        setImportedFields(new Set(['title']));
+        Alert.alert(
+          'לא נמצאה סכמת מתכון בדף זה',
+          hasLdJson
+            ? 'הדף מכיל נתונים מובנים אך ללא סכמת Recipe.\nהכותרת יובאה — הוסף מרכיבים ושלבים ידנית.'
+            : 'הדף אינו מכיל סכמת מתכון מובנית.\nהכותרת יובאה — הוסף מרכיבים ושלבים ידנית.',
+        );
+      } else {
+        Alert.alert(
+          'לא נמצאו נתוני מתכון בדף זה',
+          'הדף אינו כולל סכמת Recipe (JSON-LD).\nנסה אתר מתכונים מוכר, או העתק ידנית.',
+        );
+      }
+
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      console.error('[URL Import] Error →', err);
+      Alert.alert(
+        'שגיאה בייבוא',
+        err?.name === 'AbortError'
+          ? 'פג תוקף החיבור (20 שניות). בדוק חיבור אינטרנט ונסה שוב.'
+          : (err.message ?? 'שגיאה לא ידועה'),
+      );
+    } finally {
+      // Always re-enable the button, regardless of success or failure
+      setIsImportingUrl(false);
+    }
+  }
+
   function toggleCategory(id: string) {
     setSelectedCategories(prev =>
       prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
@@ -241,7 +615,7 @@ export default function AddRecipeScreen() {
 
     setIsSubmitting(true);
     try {
-      await saveRecipe({ title, description, prepTime, difficulty, selectedCategories, ingredients, steps, imageUri: imageUri ?? undefined });
+      await saveRecipe({ title, description, prepTime, difficulty, selectedCategories, ingredients, steps, imageUri: imageUri ?? undefined, ocrImageUris: ocrImages });
       setTitle('');
       setDescription('');
       setPrepTime('');
@@ -250,6 +624,7 @@ export default function AddRecipeScreen() {
       setIngredients(['']);
       setSteps(['']);
       setImageUri(null);
+      setOcrImages([]);
       setImportedFields(new Set());
       router.replace('/');
     } catch (error: any) {
@@ -297,6 +672,93 @@ export default function AddRecipeScreen() {
               <Text style={styles.headerTitle}>מתכון חדש</Text>
             </View>
           </View>
+
+          {/* ── URL Import Row ── */}
+          <View style={styles.urlRow}>
+            <TextInput
+              style={[styles.urlInput, isImportingUrl && styles.importBtnDisabled]}
+              placeholder="הדבק קישור למתכון..."
+              placeholderTextColor={Colors.textSecondary}
+              value={urlInput}
+              onChangeText={setUrlInput}
+              keyboardType="url"
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="go"
+              onSubmitEditing={handleImportFromUrl}
+              editable={!isImportingUrl}
+              textAlign="left"
+            />
+            <TouchableOpacity
+              style={[styles.importBtn, styles.urlImportBtn, (isImportingUrl || !urlInput.trim()) && styles.importBtnDisabled]}
+              onPress={handleImportFromUrl}
+              disabled={isImportingUrl || !urlInput.trim()}
+              activeOpacity={0.8}
+            >
+              {isImportingUrl ? (
+                <ActivityIndicator size="small" color={Colors.primary} />
+              ) : (
+                <Ionicons name="link-outline" size={17} color={Colors.primary} />
+              )}
+              <Text style={styles.importBtnLabel}>
+                {isImportingUrl ? 'טוען...' : 'ייבא מקישור'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* ══ OCR SCAN ROW ══ */}
+          <View style={styles.ocrRow}>
+            <TouchableOpacity
+              style={[styles.importBtn, styles.ocrScanBtn, isProcessingOcr && styles.importBtnDisabled]}
+              onPress={pickOcrImages}
+              disabled={isProcessingOcr}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="scan-outline" size={17} color={Colors.primary} />
+              <Text style={styles.importBtnLabel}>סרוק תמונות למתכון</Text>
+            </TouchableOpacity>
+
+            {ocrImages.length > 0 && (
+              <TouchableOpacity
+                style={[styles.importBtn, styles.ocrProcessBtn, isProcessingOcr && styles.importBtnDisabled]}
+                onPress={() => processOcrImages(ocrImages)}
+                disabled={isProcessingOcr}
+                activeOpacity={0.8}
+              >
+                {isProcessingOcr ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <Ionicons name="sparkles-outline" size={17} color={Colors.primary} />
+                )}
+                <Text style={styles.importBtnLabel}>
+                  {isProcessingOcr ? 'מעבד...' : 'עבד תמונות'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* ── OCR Thumbnails Grid ── */}
+          {ocrImages.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.ocrThumbnailsScroll}
+              contentContainerStyle={styles.ocrThumbnailsContent}
+            >
+              {ocrImages.map((uri, index) => (
+                <View key={index} style={styles.ocrThumbnailWrap}>
+                  <Image source={{ uri }} style={styles.ocrThumbnail} resizeMode="cover" />
+                  <TouchableOpacity
+                    style={styles.ocrRemoveBtn}
+                    onPress={() => removeOcrImage(index)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="close-circle" size={20} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          )}
 
           {/* ══ IMAGE PICKER ══ */}
           <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.8}>
@@ -502,7 +964,7 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.15.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.18.4</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -577,6 +1039,28 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+
+  // ── URL import row ──
+  urlRow: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  urlInput: {
+    flex: 1,
+    height: 42,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: Colors.textPrimary,
+  },
+  urlImportBtn: {
+    flexShrink: 0,
   },
 
   // ── Import button ──
@@ -838,5 +1322,42 @@ const styles = StyleSheet.create({
   imagePlaceholderText: {
     fontSize: 14,
     color: Colors.textSecondary,
+  },
+
+  // ── OCR scan row ──
+  ocrRow: {
+    flexDirection: 'row-reverse',
+    gap: 8,
+    marginBottom: 8,
+  },
+  ocrScanBtn: {
+    flex: 1,
+  },
+  ocrProcessBtn: {
+    flex: 1,
+  },
+
+  // ── OCR thumbnails horizontal scroll ──
+  ocrThumbnailsScroll: {
+    marginBottom: 12,
+  },
+  ocrThumbnailsContent: {
+    gap: 8,
+    paddingHorizontal: 2,
+  },
+  ocrThumbnailWrap: {
+    width: 90,
+    height: 90,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  ocrThumbnail: {
+    width: '100%',
+    height: '100%',
+  },
+  ocrRemoveBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
   },
 });

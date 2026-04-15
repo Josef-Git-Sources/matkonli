@@ -44,6 +44,9 @@ export interface RecipeRow {
   title:        string;
   description:  string | null;
   image_url:    string | null;
+  /** Public Storage URLs of images submitted for OCR scanning (v1.17.0+).
+   *  Requires DB migration: ALTER TABLE recipes ADD COLUMN ocr_images jsonb; */
+  ocr_images:   string[] | null;
   instructions: RecipeStep[];
   prep_time:    number | null;
   cook_time:    number | null;

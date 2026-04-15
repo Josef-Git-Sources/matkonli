@@ -46,6 +46,8 @@ export default function EditRecipeScreen() {
   const [steps, setSteps]             = useState<string[]>(['']);
   const [imageUri, setImageUri]       = useState<string | null>(null);   // new local image
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null); // remote URL
+  const [ocrImages, setOcrImages]     = useState<string[]>([]);  // new local OCR images
+  const [existingOcrImageUrls, setExistingOcrImageUrls] = useState<string[]>([]); // stored OCR URLs
 
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
@@ -71,6 +73,7 @@ export default function EditRecipeScreen() {
         setIngredients(recipe.ingredients.length > 0 ? recipe.ingredients.map(i => i.name) : ['']);
         setSteps(recipe.instructions.length > 0 ? recipe.instructions.map(s => s.text) : ['']);
         setExistingImageUrl(recipe.image_url ?? null);
+        setExistingOcrImageUrls(recipe.ocr_images ?? []);
         setCategories(cats);
       })
       .catch(() => setFetchError('שגיאה בטעינת המתכון'))
@@ -92,6 +95,32 @@ export default function EditRecipeScreen() {
       quality: 0.8,
     });
     if (!result.canceled) setImageUri(result.assets[0].uri);
+  }
+
+  async function pickOcrImages() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה לגלריה כדי לסרוק תמונות.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      setOcrImages(prev => [...prev, ...result.assets.map(a => a.uri)]);
+    }
+  }
+
+  function removeOcrImage(index: number) {
+    // Indices 0..existingOcrImageUrls.length-1 are existing; rest are new local
+    if (index < existingOcrImageUrls.length) {
+      setExistingOcrImageUrls(prev => prev.filter((_, i) => i !== index));
+    } else {
+      const localIndex = index - existingOcrImageUrls.length;
+      setOcrImages(prev => prev.filter((_, i) => i !== localIndex));
+    }
   }
 
   function toggleCategory(catId: string) {
@@ -129,8 +158,10 @@ export default function EditRecipeScreen() {
         selectedCategories,
         ingredients,
         steps,
-        imageUri:         imageUri ?? undefined,
-        existingImageUrl: existingImageUrl ?? undefined,
+        imageUri:            imageUri ?? undefined,
+        existingImageUrl:    existingImageUrl ?? undefined,
+        ocrImageUris:        ocrImages.length > 0 ? ocrImages : undefined,
+        existingOcrImageUrls: existingOcrImageUrls.length > 0 ? existingOcrImageUrls : undefined,
       });
       router.replace(`/recipe/${id}`);
     } catch (error: any) {
@@ -203,6 +234,44 @@ export default function EditRecipeScreen() {
               </View>
             )}
           </TouchableOpacity>
+
+          {/* ══ OCR IMAGES SECTION ══ */}
+          {(() => {
+            const allOcrImages = [...existingOcrImageUrls, ...ocrImages];
+            return (
+              <>
+                <TouchableOpacity
+                  style={styles.ocrScanBtn}
+                  onPress={pickOcrImages}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="scan-outline" size={17} color={Colors.primary} />
+                  <Text style={styles.ocrScanBtnLabel}>סרוק תמונות למתכון</Text>
+                </TouchableOpacity>
+                {allOcrImages.length > 0 && (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.ocrThumbnailsScroll}
+                    contentContainerStyle={styles.ocrThumbnailsContent}
+                  >
+                    {allOcrImages.map((uri, index) => (
+                      <View key={index} style={styles.ocrThumbnailWrap}>
+                        <Image source={{ uri }} style={styles.ocrThumbnail} resizeMode="cover" />
+                        <TouchableOpacity
+                          style={styles.ocrRemoveBtn}
+                          onPress={() => removeOcrImage(index)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="close-circle" size={20} color="#fff" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+              </>
+            );
+          })()}
 
           {/* ══ SECTION: Recipe Details ══ */}
           <SectionCard label="פרטי המתכון">
@@ -533,4 +602,25 @@ const styles = StyleSheet.create({
   imageOverlayText:    { color: '#fff', fontSize: 14, fontWeight: '600' },
   imagePlaceholder:    { flex: 1, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', gap: 8 },
   imagePlaceholderText:{ fontSize: 14, color: Colors.textSecondary },
+
+  // ── OCR scan ──
+  ocrScanBtn: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  ocrScanBtnLabel: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  ocrThumbnailsScroll:   { marginBottom: 12 },
+  ocrThumbnailsContent:  { gap: 8, paddingHorizontal: 2 },
+  ocrThumbnailWrap:      { width: 90, height: 90, borderRadius: 10, overflow: 'hidden' },
+  ocrThumbnail:          { width: '100%', height: '100%' },
+  ocrRemoveBtn:          { position: 'absolute', top: 4, right: 4 },
 });

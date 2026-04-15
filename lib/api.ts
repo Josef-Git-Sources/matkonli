@@ -165,28 +165,39 @@ export async function toggleFavorite(id: string, isFavorite: boolean): Promise<v
 }
 
 export interface UpdateRecipeParams {
-  title:              string;
-  description:        string;
-  prepTime:           string;
-  difficulty:         DifficultyLevel | null;
-  selectedCategories: string[];
-  ingredients:        string[];
-  steps:              string[];
-  imageUri?:          string;   // new local file URI — upload if present
-  existingImageUrl?:  string;   // keep existing remote URL if no new image
+  title:                  string;
+  description:            string;
+  prepTime:               string;
+  difficulty:             DifficultyLevel | null;
+  selectedCategories:     string[];
+  ingredients:            string[];
+  steps:                  string[];
+  imageUri?:              string;   // new local file URI — upload if present
+  existingImageUrl?:      string;   // keep existing remote URL if no new image
+  /** New local OCR image URIs to upload and append (v1.17.0). */
+  ocrImageUris?:          string[];
+  /** Already-stored OCR image URLs to keep (v1.17.0). */
+  existingOcrImageUrls?:  string[];
 }
 
 export async function updateRecipe(id: string, params: UpdateRecipeParams): Promise<void> {
   const cleanIngredients = params.ingredients.filter(i => i.trim());
   const cleanSteps       = params.steps.filter(s => s.trim());
 
-  // 1. Upload new image if the user picked one
+  // 1. Upload new cover image if the user picked one
   let imageUrl: string | null = params.existingImageUrl ?? null;
   if (params.imageUri) {
     imageUrl = await uploadRecipeImage(params.imageUri);
   }
 
-  // 2. Update recipe row
+  // 2. Upload new OCR images and merge with existing ones (v1.17.0)
+  let ocrImageUrls: string[] = params.existingOcrImageUrls ?? [];
+  if (params.ocrImageUris && params.ocrImageUris.length > 0) {
+    const newUrls = await Promise.all(params.ocrImageUris.map(uri => uploadRecipeImage(uri)));
+    ocrImageUrls = [...ocrImageUrls, ...newUrls];
+  }
+
+  // 3. Update recipe row
   const { error: recipeError } = await supabase
     .from('recipes')
     .update({
@@ -196,6 +207,8 @@ export async function updateRecipe(id: string, params: UpdateRecipeParams): Prom
       difficulty:   params.difficulty,
       instructions: cleanSteps.map((text, i) => ({ step: i + 1, text, image_url: null })),
       image_url:    imageUrl,
+      // NOTE: requires DB migration: ALTER TABLE recipes ADD COLUMN ocr_images jsonb;
+      ...(ocrImageUrls.length > 0 ? { ocr_images: ocrImageUrls } : {}),
     })
     .eq('id', id);
 
@@ -235,6 +248,8 @@ export interface SaveRecipeParams {
   ingredients:        string[];
   steps:              string[];
   imageUri?:          string;
+  /** Local file URIs of OCR source images; will be uploaded to Storage on save (v1.17.0). */
+  ocrImageUris?:      string[];
 }
 
 /**
@@ -249,13 +264,19 @@ export async function saveRecipe(params: SaveRecipeParams): Promise<void> {
   const cleanIngredients = params.ingredients.filter(i => i.trim());
   const cleanSteps       = params.steps.filter(s => s.trim());
 
-  // 1. Upload image if provided
+  // 1. Upload recipe cover image if provided
   let imageUrl: string | null = null;
   if (params.imageUri) {
     imageUrl = await uploadRecipeImage(params.imageUri);
   }
 
-  // 2. Insert recipe row
+  // 2. Upload OCR source images if provided (v1.17.0)
+  let ocrImageUrls: string[] = [];
+  if (params.ocrImageUris && params.ocrImageUris.length > 0) {
+    ocrImageUrls = await Promise.all(params.ocrImageUris.map(uri => uploadRecipeImage(uri)));
+  }
+
+  // 3. Insert recipe row
   const { data: recipe, error: recipeError } = await supabase
     .from('recipes')
     .insert({
@@ -266,6 +287,9 @@ export async function saveRecipe(params: SaveRecipeParams): Promise<void> {
       difficulty:   params.difficulty,
       instructions: cleanSteps.map((text, i) => ({ step: i + 1, text, image_url: null })),
       image_url:    imageUrl,
+      // NOTE: requires DB migration before this column is active:
+      // ALTER TABLE recipes ADD COLUMN ocr_images jsonb;
+      ...(ocrImageUrls.length > 0 ? { ocr_images: ocrImageUrls } : {}),
       is_public:    false,
       source_type:  'manual',
       language:     'he',
@@ -277,7 +301,7 @@ export async function saveRecipe(params: SaveRecipeParams): Promise<void> {
 
   const recipeId = recipe.id;
 
-  // 3. Insert ingredients (skip if none)
+  // 4. Insert ingredients (skip if none)
   if (cleanIngredients.length > 0) {
     const { error: ingError } = await supabase
       .from('ingredients')
@@ -294,7 +318,7 @@ export async function saveRecipe(params: SaveRecipeParams): Promise<void> {
     if (ingError) throw ingError;
   }
 
-  // 4. Link categories (skip if none selected)
+  // 5. Link categories (skip if none selected)
   if (params.selectedCategories.length > 0) {
     const { error: catError } = await supabase
       .from('recipe_categories')
