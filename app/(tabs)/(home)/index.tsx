@@ -2,6 +2,7 @@ import {
   View,
   Text,
   Image,
+  ImageBackground,
   FlatList,
   ScrollView,
   TextInput,
@@ -20,6 +21,7 @@ import Colors from '@/constants/colors';
 import { fetchRecipes, toggleFavorite } from '@/lib/api';
 import type { RecipeWithCategories } from '@/lib/api';
 import type { DifficultyLevel } from '@/types/database';
+import { useTheme } from '@/context/ThemeContext';
 
 // ── Difficulty helpers ─────────────────────────────────────────
 
@@ -64,6 +66,7 @@ export default function HomeScreen() {
   const router     = useRouter();
   const { width }  = useWindowDimensions();
   const numColumns = getNumColumns(width);
+  const { backgroundImage, backgroundOpacity } = useTheme();
 
   useFocusEffect(
     useCallback(() => {
@@ -129,6 +132,12 @@ export default function HomeScreen() {
   const showFilterBar = !isLoading && !error && recipes.length > 0;
 
   return (
+    <ImageBackground
+      source={{ uri: backgroundImage }}
+      style={{ flex: 1 }}
+      imageStyle={{ opacity: backgroundOpacity }}
+      resizeMode="cover"
+    >
     <SafeAreaView style={styles.safeArea}>
 
       {/* ── Page header ── */}
@@ -242,55 +251,58 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {isLoading ? (
-        <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-        </View>
-      ) : error ? (
-        <View style={styles.centerContent}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      ) : recipes.length === 0 ? (
-        <View style={styles.centerContent}>
-          <Ionicons name="book-outline" size={56} color={Colors.border} />
-          <Text style={styles.emptyText}>
-            עדיין אין מתכונים.{'\n'}לחץ על ה-➕ כדי להוסיף את המתכון הראשון שלך!
-          </Text>
-          <Text style={styles.versionLabel}>גרסה: v1.15.0</Text>
-        </View>
-      ) : filteredRecipes.length === 0 ? (
-        <View style={styles.centerContent}>
-          <Ionicons name="search-outline" size={48} color={Colors.border} />
-          <Text style={styles.emptyText}>לא נמצאו מתכונים תואמים.</Text>
-        </View>
-      ) : (
-        <FlatList
-          key={numColumns}
-          data={gridData}
-          keyExtractor={item => item.id}
-          numColumns={numColumns}
-          contentContainerStyle={styles.listContent}
-          columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) =>
-            isFiller(item) ? (
-              <View style={[styles.cardGrid, styles.cardFiller]} />
-            ) : (
-              <RecipeCard
-                recipe={item}
-                onPress={() => router.push(`/recipe/${item.id}`)}
-                numColumns={numColumns}
-                onToggleFavorite={() => handleToggleFavorite(item.id, item.is_favorite)}
-              />
-            )
-          }
-          ListFooterComponent={
-            <Text style={styles.versionLabel}>גרסה: v1.15.0</Text>
-          }
-        />
-      )}
+      <View style={styles.mainContent}>
+        {isLoading ? (
+          <View style={styles.centerContent}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+          </View>
+        ) : error ? (
+          <View style={styles.centerContent}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : recipes.length === 0 ? (
+          <View style={styles.centerContent}>
+            <Ionicons name="book-outline" size={56} color={Colors.border} />
+            <Text style={styles.emptyText}>
+              עדיין אין מתכונים.{'\n'}לחץ על ה-➕ כדי להוסיף את המתכון הראשון שלך!
+            </Text>
+            <Text style={styles.versionLabel}>גרסה: v1.19.3</Text>
+          </View>
+        ) : filteredRecipes.length === 0 ? (
+          <View style={styles.centerContent}>
+            <Ionicons name="search-outline" size={48} color={Colors.border} />
+            <Text style={styles.emptyText}>לא נמצאו מתכונים תואמים.</Text>
+          </View>
+        ) : (
+          <FlatList
+            key={numColumns}
+            data={gridData}
+            keyExtractor={item => item.id}
+            numColumns={numColumns}
+            contentContainerStyle={styles.listContent}
+            columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : undefined}
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item }) =>
+              isFiller(item) ? (
+                <View style={[styles.cardGrid, styles.cardFiller]} />
+              ) : (
+                <RecipeCard
+                  recipe={item}
+                  onPress={() => router.push(`/recipe/${item.id}`)}
+                  numColumns={numColumns}
+                  onToggleFavorite={() => handleToggleFavorite(item.id, item.is_favorite)}
+                />
+              )
+            }
+            ListFooterComponent={
+              <Text style={styles.versionLabel}>גרסה: v1.19.3</Text>
+            }
+          />
+        )}
+      </View>
 
     </SafeAreaView>
+    </ImageBackground>
   );
 }
 
@@ -344,7 +356,7 @@ function RecipeCard({
           <Image source={{ uri: recipe.image_url }} style={styles.cardImage} resizeMode="cover" />
         ) : (
           <View style={styles.cardImagePlaceholder}>
-            <Ionicons name="image-outline" size={32} color={Colors.border} />
+            <Ionicons name="restaurant-outline" size={32} color={Colors.border} />
           </View>
         )}
         {/* Share — top-left */}
@@ -417,7 +429,7 @@ function RecipeCard({
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: 'transparent',
   },
 
   header: {
@@ -428,7 +440,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    backgroundColor: Colors.surface,
+    backgroundColor: 'rgba(255,255,255,0.92)',
   },
   headerTitle: {
     fontSize: 22,
@@ -439,7 +451,7 @@ const styles = StyleSheet.create({
 
   // ── Filter bar ──
   filterContainer: {
-    backgroundColor: Colors.surface,
+    backgroundColor: 'rgba(255,255,255,0.92)',
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 6,
@@ -505,6 +517,11 @@ const styles = StyleSheet.create({
   chipLabelActive: {
     color: '#fff',
     fontWeight: '600',
+  },
+
+  mainContent: {
+    flex: 1,
+    backgroundColor: 'transparent',
   },
 
   centerContent: {

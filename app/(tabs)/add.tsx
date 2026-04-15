@@ -2,6 +2,7 @@ import {
   View,
   Text,
   Image,
+  ImageBackground,
   TextInput,
   ScrollView,
   TouchableOpacity,
@@ -20,6 +21,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
+import { useTheme } from '@/context/ThemeContext';
 import { fetchCategories, saveRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
@@ -152,6 +154,7 @@ const DIFFICULTY_OPTIONS: { value: DifficultyLevel; label: string; color: string
 
 export default function AddRecipeScreen() {
   const router = useRouter();
+  const { backgroundImage, backgroundOpacity } = useTheme();
 
   const [title, setTitle]             = useState('');
   const [description, setDescription] = useState('');
@@ -638,10 +641,16 @@ export default function AddRecipeScreen() {
   const canSave = title.trim().length > 0 && !isSubmitting;
 
   return (
+    <ImageBackground
+      source={{ uri: backgroundImage }}
+      style={{ flex: 1 }}
+      imageStyle={{ opacity: backgroundOpacity }}
+      resizeMode="cover"
+    >
     <SafeAreaView style={styles.safeArea}>
       <SpeechToast message={toastMsg} />
       <KeyboardAvoidingView
-        style={styles.flex}
+        style={styles.mainContent}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <ScrollView
@@ -964,11 +973,12 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.18.4</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.19.3</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </ImageBackground>
   );
 }
 
@@ -1014,10 +1024,14 @@ function FieldLabel({ text }: { text: string }) {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: 'transparent',
   },
   flex: {
     flex: 1,
+  },
+  mainContent: {
+    flex: 1,
+    backgroundColor: 'transparent',
   },
   scrollContent: {
     paddingHorizontal: 16,

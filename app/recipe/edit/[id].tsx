@@ -468,7 +468,7 @@ function FieldLabel({ text }: { text: string }) {
 // ── Styles ────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safeArea:     { flex: 1, backgroundColor: Colors.background },
+  safeArea:     { flex: 1, backgroundColor: 'transparent' },
   flex:         { flex: 1 },
   centerContent:{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   errorText:    { fontSize: 15, color: '#C0392B', textAlign: 'center' },

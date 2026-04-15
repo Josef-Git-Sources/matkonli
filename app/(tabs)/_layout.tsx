@@ -27,6 +27,7 @@ const TABS: TabConfig[] = [
 export default function TabsLayout() {
   return (
     <Tabs
+      sceneContainerStyle={{ backgroundColor: 'transparent' }}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: Colors.tabBarActive,

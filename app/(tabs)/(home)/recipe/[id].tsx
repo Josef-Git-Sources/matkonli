@@ -2,6 +2,7 @@ import {
   View,
   Text,
   Image,
+  ImageBackground,
   Modal,
   Alert,
   Share,
@@ -20,6 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
+import { useTheme } from '@/context/ThemeContext';
 import { fetchRecipeById, deleteRecipe, toggleFavorite } from '@/lib/api';
 import type { RecipeDetail } from '@/lib/api';
 import type { DifficultyLevel } from '@/types/database';
@@ -184,6 +186,7 @@ const SCREEN = Dimensions.get('window');
 export default function RecipeDetailScreen() {
   const { id }    = useLocalSearchParams<{ id: string }>();
   const router    = useRouter();
+  const { backgroundImage, backgroundOpacity } = useTheme();
   const [recipe, setRecipe]                 = useState<RecipeDetail | null>(null);
   const [isLoading, setIsLoading]           = useState(true);
   const [error, setError]                   = useState<string | null>(null);
@@ -348,6 +351,12 @@ export default function RecipeDetailScreen() {
   };
 
   return (
+    <ImageBackground
+      source={{ uri: backgroundImage }}
+      style={{ flex: 1 }}
+      imageStyle={{ opacity: backgroundOpacity }}
+      resizeMode="cover"
+    >
     <SafeAreaView style={styles.safeArea}>
 
       {/* ── Top bar ── */}
@@ -425,6 +434,7 @@ export default function RecipeDetailScreen() {
         </View>
       )}
 
+      <View style={styles.mainContent}>
       {isLoading ? (
         <View style={styles.centerContent}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -724,10 +734,12 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.16.2</Text>
+          <Text style={styles.versionLabel}>v1.19.3</Text>
         </ScrollView>
       )}
+      </View>
     </SafeAreaView>
+    </ImageBackground>
   );
 }
 
@@ -747,7 +759,7 @@ function SectionHeader({ icon, title }: { icon: React.ComponentProps<typeof Ioni
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: 'transparent',
   },
 
   // ── Top bar ──
@@ -758,7 +770,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    backgroundColor: Colors.surface,
+    backgroundColor: 'rgba(255,255,255,0.92)',
   },
   topBarButton: {
     padding: 4,
@@ -775,6 +787,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row-reverse',
     alignItems: 'center',
     gap: 4,
+  },
+
+  mainContent: {
+    flex: 1,
+    backgroundColor: 'transparent',
   },
 
   centerContent: {
