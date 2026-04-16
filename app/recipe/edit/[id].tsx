@@ -15,8 +15,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import ImageViewerModal from '@/components/ImageViewerModal';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
+import { compressImage } from '@/utils/imageUtils';
 import { fetchRecipeById, fetchCategories, updateRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
@@ -50,6 +52,20 @@ export default function EditRecipeScreen() {
   const [existingOcrImageUrls, setExistingOcrImageUrls] = useState<string[]>([]); // stored OCR URLs
 
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
+  const [showOcrPreview, setShowOcrPreview] = useState(false);
+
+  const allOcrImages = [...existingOcrImageUrls, ...ocrImages];
+
+  // Unified image viewer
+  const [viewerImages,  setViewerImages]  = useState<{ uri: string }[]>([]);
+  const [viewerIndex,   setViewerIndex]   = useState(0);
+  const [viewerVisible, setViewerVisible] = useState(false);
+
+  function openViewer(images: string[], startIndex = 0) {
+    setViewerImages(images.map(uri => ({ uri })));
+    setViewerIndex(startIndex);
+    setViewerVisible(true);
+  }
 
   // ── Loading state ──
   const [isFetching, setIsFetching]   = useState(true);
@@ -94,7 +110,10 @@ export default function EditRecipeScreen() {
       aspect: [4, 3],
       quality: 0.8,
     });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
+    if (!result.canceled) {
+      const compressed = await compressImage(result.assets[0].uri);
+      setImageUri(compressed);
+    }
   }
 
   async function pickOcrImages() {
@@ -109,7 +128,8 @@ export default function EditRecipeScreen() {
       quality: 0.8,
     });
     if (!result.canceled) {
-      setOcrImages(prev => [...prev, ...result.assets.map(a => a.uri)]);
+      const compressed = await Promise.all(result.assets.map(a => compressImage(a.uri)));
+      setOcrImages(prev => [...prev, ...compressed]);
     }
   }
 
@@ -208,8 +228,51 @@ export default function EditRecipeScreen() {
             <Ionicons name="chevron-forward" size={26} color={Colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.topBarTitle} numberOfLines={1}>עריכת מתכון</Text>
-          <View style={{ width: 34 }} />
+          {allOcrImages.length > 0 ? (
+            <TouchableOpacity
+              style={[styles.topBarButton, showOcrPreview && styles.topBarButtonActive]}
+              onPress={() => setShowOcrPreview(p => !p)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={showOcrPreview ? 'eye' : 'eye-outline'}
+                size={22}
+                color={showOcrPreview ? Colors.primary : Colors.textSecondary}
+              />
+            </TouchableOpacity>
+          ) : (
+            <View style={{ width: 34 }} />
+          )}
         </View>
+
+        {/* ── Collapsible OCR reference images panel ── */}
+        {showOcrPreview && allOcrImages.length > 0 && (
+          <View style={styles.ocrPreviewPanel}>
+            <View style={styles.ocrPreviewHeader}>
+              <Text style={styles.ocrPreviewTitle}>תמונות מקור לסריקה</Text>
+              <Ionicons name="images-outline" size={16} color={Colors.primary} />
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.ocrPreviewContent}
+            >
+              {allOcrImages.map((uri, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.ocrPreviewThumbWrap}
+                  onPress={() => openViewer(allOcrImages, index)}
+                  activeOpacity={0.8}
+                >
+                  <Image source={{ uri }} style={styles.ocrPreviewThumb} resizeMode="cover" />
+                  <View style={styles.ocrPreviewThumbHint}>
+                    <Ionicons name="expand-outline" size={12} color="#fff" />
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
         <ScrollView
           contentContainerStyle={styles.scrollContent}
@@ -226,6 +289,14 @@ export default function EditRecipeScreen() {
                   <Ionicons name="camera-outline" size={22} color="#fff" />
                   <Text style={styles.imageOverlayText}>החלף תמונה</Text>
                 </View>
+                {/* Zoom button — tap without triggering the replace-image handler */}
+                <TouchableOpacity
+                  style={styles.imageZoomBtn}
+                  onPress={(e) => { e.stopPropagation(); openViewer([previewUri]); }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="expand-outline" size={16} color="#fff" />
+                </TouchableOpacity>
               </>
             ) : (
               <View style={styles.imagePlaceholder}>
@@ -236,42 +307,37 @@ export default function EditRecipeScreen() {
           </TouchableOpacity>
 
           {/* ══ OCR IMAGES SECTION ══ */}
-          {(() => {
-            const allOcrImages = [...existingOcrImageUrls, ...ocrImages];
-            return (
-              <>
-                <TouchableOpacity
-                  style={styles.ocrScanBtn}
-                  onPress={pickOcrImages}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="scan-outline" size={17} color={Colors.primary} />
-                  <Text style={styles.ocrScanBtnLabel}>סרוק תמונות למתכון</Text>
-                </TouchableOpacity>
-                {allOcrImages.length > 0 && (
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    style={styles.ocrThumbnailsScroll}
-                    contentContainerStyle={styles.ocrThumbnailsContent}
-                  >
-                    {allOcrImages.map((uri, index) => (
-                      <View key={index} style={styles.ocrThumbnailWrap}>
-                        <Image source={{ uri }} style={styles.ocrThumbnail} resizeMode="cover" />
-                        <TouchableOpacity
-                          style={styles.ocrRemoveBtn}
-                          onPress={() => removeOcrImage(index)}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="close-circle" size={20} color="#fff" />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </ScrollView>
-                )}
-              </>
-            );
-          })()}
+          <>
+            <TouchableOpacity
+              style={styles.ocrScanBtn}
+              onPress={pickOcrImages}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="scan-outline" size={17} color={Colors.primary} />
+              <Text style={styles.ocrScanBtnLabel}>סרוק תמונות למתכון</Text>
+            </TouchableOpacity>
+            {allOcrImages.length > 0 && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.ocrThumbnailsScroll}
+                contentContainerStyle={styles.ocrThumbnailsContent}
+              >
+                {allOcrImages.map((uri, index) => (
+                  <View key={index} style={styles.ocrThumbnailWrap}>
+                    <Image source={{ uri }} style={styles.ocrThumbnail} resizeMode="cover" />
+                    <TouchableOpacity
+                      style={styles.ocrRemoveBtn}
+                      onPress={() => removeOcrImage(index)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="close-circle" size={20} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </>
 
           {/* ══ SECTION: Recipe Details ══ */}
           <SectionCard label="פרטי המתכון">
@@ -440,10 +506,18 @@ export default function EditRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.11.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.21.1</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Unified fullscreen image viewer ── */}
+      <ImageViewerModal
+        images={viewerImages}
+        imageIndex={viewerIndex}
+        visible={viewerVisible}
+        onRequestClose={() => setViewerVisible(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -600,8 +674,66 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   imageOverlayText:    { color: '#fff', fontSize: 14, fontWeight: '600' },
+  imageZoomBtn: {
+    position: 'absolute',
+    bottom: 10,
+    left: 10,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 18,
+    padding: 6,
+  },
   imagePlaceholder:    { flex: 1, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', gap: 8 },
   imagePlaceholderText:{ fontSize: 14, color: Colors.textSecondary },
+
+  topBarButtonActive: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 8,
+  },
+
+  // ── OCR collapsible reference panel ──
+  ocrPreviewPanel: {
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  ocrPreviewHeader: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+  },
+  ocrPreviewTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  ocrPreviewContent: {
+    gap: 8,
+    paddingHorizontal: 2,
+  },
+  ocrPreviewThumbWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+  },
+  ocrPreviewThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  ocrPreviewThumbHint: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 12,
+    padding: 3,
+  },
 
   // ── OCR scan ──
   ocrScanBtn: {

@@ -15,6 +15,7 @@ import {
   Animated,
   Vibration,
 } from 'react-native';
+import ImageViewerModal from '@/components/ImageViewerModal';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -192,10 +193,20 @@ export default function RecipeDetailScreen() {
   const [error, setError]                   = useState<string | null>(null);
   useKeepAwake();
 
-  const [imageModalOpen, setImageModalOpen]       = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting]               = useState(false);
   const [multiplier, setMultiplier]               = useState(1);
+
+  // Unified image viewer state (cover + OCR images combined)
+  const [viewerImages,  setViewerImages]  = useState<{ uri: string }[]>([]);
+  const [viewerIndex,   setViewerIndex]   = useState(0);
+  const [viewerVisible, setViewerVisible] = useState(false);
+
+  function openViewer(images: string[], startIndex = 0) {
+    setViewerImages(images.map(uri => ({ uri })));
+    setViewerIndex(startIndex);
+    setViewerVisible(true);
+  }
 
   // ── Timer state ──────────────────────────────────────────────
   const [timerTotal,  setTimerTotal]  = useState(0);           // user-set duration (seconds)
@@ -481,7 +492,7 @@ export default function RecipeDetailScreen() {
 
           {/* ── Hero image ── */}
           {recipe.image_url ? (
-            <TouchableOpacity onPress={() => setImageModalOpen(true)} activeOpacity={0.9}>
+            <TouchableOpacity onPress={() => openViewer([recipe.image_url!])} activeOpacity={0.9}>
               <Image source={{ uri: recipe.image_url }} style={styles.heroImage} resizeMode="cover" />
               <View style={styles.heroZoomHint}>
                 <Ionicons name="expand-outline" size={18} color="#fff" />
@@ -493,34 +504,7 @@ export default function RecipeDetailScreen() {
             </View>
           )}
 
-          {/* ── Fullscreen image modal ── */}
-          <Modal
-            visible={imageModalOpen}
-            transparent
-            animationType="fade"
-            onRequestClose={() => setImageModalOpen(false)}
-            statusBarTranslucent
-          >
-            <View style={styles.modalBackdrop}>
-              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setImageModalOpen(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={28} color="#fff" />
-              </TouchableOpacity>
-              <ScrollView
-                contentContainerStyle={styles.modalScrollContent}
-                maximumZoomScale={4}
-                minimumZoomScale={1}
-                showsVerticalScrollIndicator={false}
-                showsHorizontalScrollIndicator={false}
-                centerContent
-              >
-                <Image
-                  source={{ uri: recipe.image_url }}
-                  style={styles.modalImage}
-                  resizeMode="contain"
-                />
-              </ScrollView>
-            </View>
-          </Modal>
+          {/* Fullscreen viewing handled by ImageViewing below */}
 
           {/* ── Title ── */}
           <Text style={styles.title}>{recipe.title}</Text>
@@ -734,10 +718,44 @@ export default function RecipeDetailScreen() {
             </View>
           ) : null}
 
-          <Text style={styles.versionLabel}>v1.19.3</Text>
+          {/* ── OCR / Reference images ── */}
+          {recipe.ocr_images && recipe.ocr_images.length > 0 ? (
+            <View style={styles.section}>
+              <SectionHeader icon="images-outline" title="תמונות מקור לסריקה" />
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.ocrThumbsContent}
+              >
+                {recipe.ocr_images.map((uri, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.ocrThumbWrap}
+                    onPress={() => openViewer(recipe.ocr_images!, i)}
+                    activeOpacity={0.8}
+                  >
+                    <Image source={{ uri }} style={styles.ocrThumb} resizeMode="cover" />
+                    <View style={styles.ocrThumbHint}>
+                      <Ionicons name="expand-outline" size={14} color="#fff" />
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
+
+          <Text style={styles.versionLabel}>v1.21.1</Text>
         </ScrollView>
       )}
       </View>
+
+      {/* ── Unified fullscreen image viewer ── */}
+      <ImageViewerModal
+        images={viewerImages}
+        imageIndex={viewerIndex}
+        visible={viewerVisible}
+        onRequestClose={() => setViewerVisible(false)}
+      />
     </SafeAreaView>
     </ImageBackground>
   );
@@ -1217,5 +1235,33 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#C0392B',
     textAlign: 'center',
+  },
+
+  // ── OCR reference image thumbnails ──
+  ocrThumbsContent: {
+    gap: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  ocrThumbWrap: {
+    width: 110,
+    height: 110,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: 'rgba(255,255,255,0.7)',
+  },
+  ocrThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  ocrThumbHint: {
+    position: 'absolute',
+    bottom: 6,
+    right: 6,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 14,
+    padding: 4,
   },
 });

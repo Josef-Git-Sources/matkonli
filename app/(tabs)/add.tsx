@@ -19,6 +19,8 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import ImageViewerModal from '@/components/ImageViewerModal';
+import { compressImage } from '@/utils/imageUtils';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { useTheme } from '@/context/ThemeContext';
@@ -173,6 +175,9 @@ export default function AddRecipeScreen() {
   const [urlInput,       setUrlInput]       = useState('');
   const [isImportingUrl, setIsImportingUrl] = useState(false);
 
+  const [ocrViewerIndex,   setOcrViewerIndex]   = useState(0);
+  const [ocrViewerVisible, setOcrViewerVisible] = useState(false);
+
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
   const [categories, setCategories]               = useState<CategoryRow[]>([]);
@@ -199,7 +204,8 @@ export default function AddRecipeScreen() {
       quality: 0.8,
     });
     if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
+      const compressed = await compressImage(result.assets[0].uri);
+      setImageUri(compressed);
     }
   }
 
@@ -215,7 +221,8 @@ export default function AddRecipeScreen() {
       quality: 0.8,
     });
     if (!result.canceled) {
-      setOcrImages(prev => [...prev, ...result.assets.map(a => a.uri)]);
+      const compressed = await Promise.all(result.assets.map(a => compressImage(a.uri)));
+      setOcrImages(prev => [...prev, ...compressed]);
     }
   }
 
@@ -755,8 +762,16 @@ export default function AddRecipeScreen() {
               contentContainerStyle={styles.ocrThumbnailsContent}
             >
               {ocrImages.map((uri, index) => (
-                <View key={index} style={styles.ocrThumbnailWrap}>
+                <TouchableOpacity
+                  key={index}
+                  style={styles.ocrThumbnailWrap}
+                  onPress={() => { setOcrViewerIndex(index); setOcrViewerVisible(true); }}
+                  activeOpacity={0.85}
+                >
                   <Image source={{ uri }} style={styles.ocrThumbnail} resizeMode="cover" />
+                  <View style={styles.ocrZoomHint}>
+                    <Ionicons name="expand-outline" size={12} color="#fff" />
+                  </View>
                   <TouchableOpacity
                     style={styles.ocrRemoveBtn}
                     onPress={() => removeOcrImage(index)}
@@ -764,7 +779,7 @@ export default function AddRecipeScreen() {
                   >
                     <Ionicons name="close-circle" size={20} color="#fff" />
                   </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               ))}
             </ScrollView>
           )}
@@ -973,10 +988,18 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.19.3</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.21.1</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── OCR image full-screen viewer ── */}
+      <ImageViewerModal
+        images={ocrImages.map(uri => ({ uri }))}
+        imageIndex={ocrViewerIndex}
+        visible={ocrViewerVisible}
+        onRequestClose={() => setOcrViewerVisible(false)}
+      />
     </SafeAreaView>
     </ImageBackground>
   );
@@ -1368,6 +1391,14 @@ const styles = StyleSheet.create({
   ocrThumbnail: {
     width: '100%',
     height: '100%',
+  },
+  ocrZoomHint: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 10,
+    padding: 3,
   },
   ocrRemoveBtn: {
     position: 'absolute',
