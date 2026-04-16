@@ -14,6 +14,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
 import Colors from '@/constants/colors';
 import { useTheme } from '@/context/ThemeContext';
+import { getUserProfile } from '@/lib/userProfile';
+import type { UserProfile } from '@/lib/userProfile';
 
 // ── Background presets ────────────────────────────────────────
 
@@ -48,6 +50,7 @@ export default function ProfileScreen() {
   const [email, setEmail]         = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   const { backgroundImage, backgroundOpacity, setBackgroundImage, setBackgroundOpacity } = useTheme();
 
@@ -56,6 +59,7 @@ export default function ProfileScreen() {
       setEmail(user?.email ?? null);
       setIsLoading(false);
     });
+    getUserProfile().then(setUserProfile).catch(() => {});
   }, []);
 
   async function handleSignOut() {
@@ -122,6 +126,47 @@ export default function ProfileScreen() {
               )}
             </View>
           </View>
+        </View>
+
+        {/* ── AI Quota card ── */}
+        <View style={styles.card}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.aiIcon}>👑</Text>
+            <Text style={styles.sectionTitle}>ייבוא AI</Text>
+          </View>
+
+          {isLoading || !userProfile ? (
+            <ActivityIndicator size="small" color={Colors.primary} style={{ alignSelf: 'flex-end' }} />
+          ) : userProfile.is_premium ? (
+            <View style={styles.cardRow}>
+              <Ionicons name="checkmark-circle" size={20} color="#2A7E4F" />
+              <View style={styles.cardTextBlock}>
+                <Text style={styles.cardLabel}>סטטוס מנוי</Text>
+                <Text style={[styles.cardValue, { color: '#2A7E4F' }]}>פרימיום — סריקות ללא הגבלה</Text>
+              </View>
+            </View>
+          ) : (
+            <View>
+              <View style={styles.cardRow}>
+                <Ionicons
+                  name={userProfile.ai_quota > 0 ? 'flash-outline' : 'flash-off-outline'}
+                  size={20}
+                  color={userProfile.ai_quota > 0 ? Colors.textSecondary : '#C0392B'}
+                />
+                <View style={styles.cardTextBlock}>
+                  <Text style={styles.cardLabel}>סריקות AI שנותרו</Text>
+                  <Text style={[styles.cardValue, userProfile.ai_quota === 0 && styles.quotaEmpty]}>
+                    {userProfile.ai_quota} מתוך 3
+                  </Text>
+                </View>
+              </View>
+              {userProfile.ai_quota === 0 && (
+                <Text style={styles.quotaExhaustedText}>
+                  מכסת ה-AI החינמית אזלה — שדרג לפרימיום לסריקות ללא הגבלה
+                </Text>
+              )}
+            </View>
+          )}
         </View>
 
         {/* ── Theme / background section ── */}
@@ -205,7 +250,7 @@ export default function ProfileScreen() {
           )}
         </TouchableOpacity>
 
-        <Text style={styles.versionLabel}>גרסה: v1.19.3</Text>
+        <Text style={styles.versionLabel}>גרסה: v1.23.0</Text>
 
       </ScrollView>
     </SafeAreaView>
@@ -370,5 +415,20 @@ const styles = StyleSheet.create({
     color: '#C0C0C0',
     paddingTop: 20,
     paddingBottom: 4,
+  },
+
+  aiIcon: {
+    fontSize: 18,
+  },
+  quotaEmpty: {
+    color: '#C0392B',
+    fontWeight: '700',
+  },
+  quotaExhaustedText: {
+    fontSize: 12,
+    color: '#C0392B',
+    textAlign: 'right',
+    marginTop: 8,
+    lineHeight: 18,
   },
 });

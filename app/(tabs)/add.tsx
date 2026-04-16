@@ -16,6 +16,9 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
+import { useAuth } from '@/context/auth';
+import { getUserProfile, deductAiQuota } from '@/lib/userProfile';
+import type { UserProfile } from '@/lib/userProfile';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -28,7 +31,7 @@ import { fetchCategories, saveRecipe } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
 import { MicButton, SpeechToast } from '@/components/MicButton';
-import { parseRawText, extractPdfText, extractDocxText } from '@/lib/parseRecipeText';
+import { extractDocxText } from '@/lib/parseRecipeText';
 
 // ── URL-import helpers ────────────────────────────────────────
 
@@ -156,6 +159,7 @@ const DIFFICULTY_OPTIONS: { value: DifficultyLevel; label: string; color: string
 
 export default function AddRecipeScreen() {
   const router = useRouter();
+  const { session } = useAuth();
   const { backgroundImage, backgroundOpacity } = useTheme();
 
   const [title, setTitle]             = useState('');
@@ -178,6 +182,8 @@ export default function AddRecipeScreen() {
   const [ocrViewerIndex,   setOcrViewerIndex]   = useState(0);
   const [ocrViewerVisible, setOcrViewerVisible] = useState(false);
 
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
 
   const [categories, setCategories]               = useState<CategoryRow[]>([]);
@@ -190,6 +196,62 @@ export default function AddRecipeScreen() {
       .catch(() => setCategoriesError('שגיאה בטעינת הקטגוריות'))
       .finally(() => setCategoriesLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (session) {
+      getUserProfile().then(setUserProfile).catch(() => {});
+    }
+  }, [session]);
+
+  // ── AI access helpers ─────────────────────────────────────────
+
+  /** Returns true if the user may proceed with an AI action; shows an alert and
+   *  returns false if they are not signed in or have exhausted their quota. */
+  function checkAiQuota(): boolean {
+    if (!session) {
+      Alert.alert(
+        'נדרשת התחברות',
+        'יש להתחבר לחשבון כדי להשתמש בתכונות ה-AI.',
+        [
+          { text: 'ביטול', style: 'cancel' },
+          { text: 'התחבר', onPress: () => router.push('/login') },
+        ],
+      );
+      return false;
+    }
+    if (userProfile && !userProfile.is_premium && userProfile.ai_quota <= 0) {
+      Alert.alert(
+        'השתמשת בכל ה-AI שלך!',
+        'השתמשת בכל 3 הייבואים החינמיים שלך.\nשדרג לפרימיום לייבואים ללא הגבלה.',
+        [{ text: 'הבנתי' }],
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** Deducts one quota in Supabase and updates local state.
+   *  Call ONLY after a confirmed successful AI extraction. */
+  async function doDeductQuota(): Promise<void> {
+    if (!userProfile || userProfile.is_premium) return;
+    try {
+      const newQuota = await deductAiQuota();
+      setUserProfile(prev => prev ? { ...prev, ai_quota: newQuota } : prev);
+    } catch {
+      // Non-blocking — don't fail the import over a quota write error
+    }
+  }
+
+  // Derived: disable AI buttons when quota is exhausted for free users
+  const aiBlocked = !!(userProfile && !userProfile.is_premium && userProfile.ai_quota <= 0);
+
+  // Label helper: adds crown + remaining count for free users
+  function aiLabel(base: string): string {
+    if (userProfile && !userProfile.is_premium) {
+      return '👑 ' + base + ' (' + userProfile.ai_quota + ' נותרו)';
+    }
+    return '👑 ' + base;
+  }
 
   async function pickImage() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -210,6 +272,8 @@ export default function AddRecipeScreen() {
   }
 
   async function pickOcrImages() {
+    if (!checkAiQuota()) return;
+
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('הרשאה נדרשת', 'יש לאפשר גישה לגלריה כדי לסרוק תמונות.');
@@ -235,6 +299,9 @@ export default function AddRecipeScreen() {
       Alert.alert('שגיאה', 'לא נבחרו תמונות לסריקה.');
       return;
     }
+
+    // ── Auth + quota gate (safety net — pickOcrImages already checks) ──
+    if (!checkAiQuota()) return;
 
     if (!process.env.EXPO_PUBLIC_GEMINI_API_KEY) {
       Alert.alert('שגיאת הגדרות', 'מפתח ה-API של Gemini חסר. בדוק את קובץ ה-.env.local.');
@@ -327,6 +394,9 @@ export default function AddRecipeScreen() {
         return;
       }
 
+      // ── Deduct quota ONLY on successful extraction, never on errors ──
+      await doDeductQuota();
+
       setImportedFields(filled);
 
       const fieldLabels: Record<string, string> = {
@@ -351,134 +421,189 @@ export default function AddRecipeScreen() {
   }
 
   async function handleImportFromFile() {
-    let result: DocumentPicker.DocumentPickerResult;
+    if (!checkAiQuota()) return;
+
+    if (!process.env.EXPO_PUBLIC_GEMINI_API_KEY) {
+      Alert.alert('שגיאת הגדרות', 'מפתח ה-API של Gemini חסר. בדוק את קובץ ה-.env.local.');
+      return;
+    }
+
+    // ── 1. Pick file ───────────────────────────────────────────
+    let pickerResult: DocumentPicker.DocumentPickerResult;
     try {
-      result = await DocumentPicker.getDocumentAsync({
-        type: ['text/plain', 'application/pdf',
-               'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      pickerResult = await DocumentPicker.getDocumentAsync({
+        type: [
+          'text/plain',
+          'application/pdf',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ],
         copyToCacheDirectory: true,
       });
     } catch (err: any) {
-      console.error('[Import] DocumentPicker error:', err);
+      console.error('[File Import] DocumentPicker error:', err);
       Alert.alert('שגיאה', 'לא ניתן לפתוח את בוחר הקבצים.');
       return;
     }
 
-    console.log('[Import] File selected:', JSON.stringify(result, null, 2));
+    if (pickerResult.canceled || !pickerResult.assets?.length) return;
 
-    if (result.canceled || !result.assets?.length) {
-      console.log('[Import] Cancelled or no assets');
-      return;
-    }
+    const asset = pickerResult.assets[0];
+    const mime  = asset.mimeType ?? '';
+    const isPdf  = mime === 'application/pdf' || !!asset.name?.endsWith('.pdf');
+    const isDocx = mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                || !!asset.name?.endsWith('.docx');
 
-    const asset = result.assets[0];
+    console.log('[File Import] Asset — name:', asset.name, '| mime:', mime);
+
     setIsImporting(true);
-
     try {
-      const mime = asset.mimeType ?? '';
-      const uri  = asset.uri;
-      console.log('[Import] Asset — name:', asset.name, '| mime:', mime, '| uri:', uri);
+      const genAI = new GoogleGenerativeAI(process.env.EXPO_PUBLIC_GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-      // ── Read raw bytes as text ─────────────────────────────
-      let rawContent = '';
+      // ── 2. Build Gemini content parts ─────────────────────────
+      // PDF → send as binary inline data (Gemini supports PDF natively).
+      // DOCX / TXT → extract text and send as a text prompt.
+      let geminiParts: any[];
 
-      if (Platform.OS === 'web') {
-        // On web, `asset.file` is the native browser File object.
-        // FileReader is the only reliable way to read it — expo-file-system
-        // is a no-op on web and silently returns nothing.
-        const webFile = (asset as any).file as File | undefined;
-        if (webFile) {
-          rawContent = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload  = (e) => resolve((e.target?.result as string) ?? '');
-            reader.onerror = ()  => reject(new Error('FileReader נכשל'));
-            reader.readAsText(webFile, 'utf-8');
-          });
-        } else {
-          // Fallback: fetch the blob/object URL the picker provided
-          const response = await fetch(uri);
-          rawContent = await response.text();
-        }
+      if (isPdf) {
+        // Read as base64 so Gemini can process the full PDF layout
+        const base64 = await readAsBase64(asset);
+        console.log('[File Import] PDF base64 length:', base64.length);
+        geminiParts = [
+          { inlineData: { data: base64, mimeType: 'application/pdf' } },
+          { text: 'לפניך קובץ PDF של מתכון. חלץ את נתוני המתכון ממנו והחזר אך ורק אובייקט JSON חוקי עם המפתחות: title (מחרוזת), ingredients (מערך מחרוזות), steps (מערך מחרוזות).' },
+        ];
       } else {
-        // Native (iOS / Android)
-        rawContent = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-      }
+        // Read as plain text for DOCX and TXT
+        let rawText = await readAsText(asset);
 
-      console.log('[Import] Raw content length:', rawContent.length);
-      console.log('[Import] Raw content preview:', rawContent.slice(0, 200));
+        if (isDocx) {
+          rawText = extractDocxText(rawText);
+          console.log('[File Import] DOCX extracted text length:', rawText.length);
+        }
 
-      // ── Format-specific extraction ─────────────────────────
-      let rawText = rawContent;
-
-      if (mime === 'application/pdf' || asset.name?.endsWith('.pdf')) {
-        rawText = extractPdfText(rawContent);
-        console.log('[Import] PDF extracted text:', rawText.slice(0, 200));
         if (!rawText.trim()) {
           Alert.alert(
-            'PDF מוצפן',
-            'לא הצלחנו לחלץ טקסט מקובץ זה. נסה לשמור אותו כ-.txt ולייבא שוב.',
+            'הקובץ ריק',
+            isDocx
+              ? 'לא הצלחנו לחלץ טקסט מקובץ Word זה. ייתכן שהוא דחוס — נסה לשמור אותו כ-.txt.'
+              : 'לא נמצא טקסט בקובץ שנבחר.',
           );
-          return;
+          return; // no quota deduction
         }
-      } else if (
-        mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        asset.name?.endsWith('.docx')
-      ) {
-        rawText = extractDocxText(rawContent);
-        console.log('[Import] DOCX extracted text:', rawText.slice(0, 200));
-        if (!rawText.trim()) {
-          Alert.alert(
-            'Word לא נתמך',
-            'לא הצלחנו לקרוא את הקובץ. נסה לשמור אותו כ-.txt ולייבא שוב.',
-          );
-          return;
-        }
-      }
-      // .txt — rawText is already rawContent
 
-      if (!rawText.trim()) {
-        Alert.alert('הקובץ ריק', 'לא נמצא טקסט בקובץ שנבחר.');
-        return;
+        const textPrompt =
+          'להלן טקסט של מתכון. חלץ את הנתונים ממנו והחזר אך ורק אובייקט JSON חוקי ' +
+          'עם המפתחות: title (מחרוזת), ingredients (מערך מחרוזות), steps (מערך מחרוזות).\n\n' +
+          rawText.slice(0, 12000); // cap to avoid token limits
+        geminiParts = [{ text: textPrompt }];
       }
 
-      // ── Parse & populate form ──────────────────────────────
-      const parsed = parseRawText(rawText);
-      console.log('[Import] Parsed result:', JSON.stringify(parsed, null, 2));
+      // ── 3. Call Gemini ─────────────────────────────────────────
+      const geminiResult = await model.generateContent(geminiParts);
+      const rawResponse  = geminiResult.response.text().trim();
+      console.log('[File Import] Gemini response:', rawResponse.slice(0, 400));
+
+      // ── 4. Parse JSON response ─────────────────────────────────
+      const jsonStr = rawResponse
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```\s*$/, '')
+        .trim();
+
+      let parsed: { title?: string; ingredients?: unknown; steps?: unknown };
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch {
+        console.error('[File Import] JSON parse failed. Raw:', rawResponse);
+        Alert.alert(
+          'שגיאה בעיבוד',
+          'המודל החזיר תשובה שלא ניתן לפענח כ-JSON. נסה שוב עם קובץ ברור יותר.',
+        );
+        return; // ← no quota deduction on parse failure
+      }
+
+      // ── 5. Populate form fields ────────────────────────────────
+      const toStringArray = (val: unknown): string[] =>
+        Array.isArray(val) ? val.map(v => String(v).trim()).filter(Boolean) : [];
 
       const filled = new Set<string>();
 
-      if (parsed.title) {
-        setTitle(parsed.title);
+      if (typeof parsed.title === 'string' && parsed.title.trim()) {
+        setTitle(parsed.title.trim());
         filled.add('title');
       }
-      if (parsed.description) {
-        setDescription(parsed.description);
-        filled.add('description');
-      }
-      if (parsed.ingredients.some(s => s.trim())) {
-        setIngredients(parsed.ingredients);
+      const parsedIngredients = toStringArray(parsed.ingredients);
+      if (parsedIngredients.length > 0) {
+        setIngredients(parsedIngredients);
         filled.add('ingredients');
       }
-      if (parsed.steps.some(s => s.trim())) {
-        setSteps(parsed.steps);
+      const parsedSteps = toStringArray(parsed.steps);
+      if (parsedSteps.length > 0) {
+        setSteps(parsedSteps);
         filled.add('steps');
       }
 
-      console.log('[Import] Filled fields:', [...filled]);
+      if (filled.size === 0) {
+        Alert.alert('לא זוהה מתכון', 'לא הצלחנו לחלץ נתוני מתכון מהקובץ. נסה קובץ אחר.');
+        return; // ← no quota deduction when extraction yields nothing
+      }
+
+      // ── 6. Deduct quota ONLY after confirmed Gemini success ────
+      await doDeductQuota();
+
       setImportedFields(filled);
 
+      const fieldLabels: Record<string, string> = {
+        title: 'כותרת', ingredients: 'מרכיבים', steps: 'שלבים',
+      };
       Alert.alert(
         'יובא בהצלחה ✓',
-        `זוהו: ${[...filled].join(', ')}.\nנא לבדוק את השדות המסומנים לפני השמירה.`,
+        'זוהו: ' + [...filled].map(k => fieldLabels[k] ?? k).join(', ') +
+          '.\nנא לבדוק את השדות המסומנים לפני השמירה.',
       );
     } catch (err: any) {
-      console.error('[Import] Error:', err);
-      Alert.alert('שגיאה בקריאת הקובץ', err.message ?? 'שגיאה לא ידועה');
+      console.error('[File Import] Error:', err);
+      Alert.alert('שגיאה בייבוא', err.message ?? 'שגיאה לא ידועה');
+      // ← no quota deduction on any exception
     } finally {
       setIsImporting(false);
     }
+  }
+
+  // ── File-reading helpers (web + native) ──────────────────────
+
+  async function readAsBase64(asset: any): Promise<string> {
+    if (Platform.OS === 'web') {
+      const webFile = asset.file as File | undefined;
+      const blob = webFile ?? await fetch(asset.uri).then(r => r.blob());
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(((reader.result as string).split(',')[1]));
+        reader.onerror   = reject;
+        reader.readAsDataURL(blob as Blob);
+      });
+    }
+    return FileSystem.readAsStringAsync(asset.uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  }
+
+  async function readAsText(asset: any): Promise<string> {
+    if (Platform.OS === 'web') {
+      const webFile = asset.file as File | undefined;
+      if (webFile) {
+        return new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload  = (e) => resolve((e.target?.result as string) ?? '');
+          reader.onerror = ()  => reject(new Error('FileReader נכשל'));
+          reader.readAsText(webFile, 'utf-8');
+        });
+      }
+      return fetch(asset.uri).then(r => r.text());
+    }
+    return FileSystem.readAsStringAsync(asset.uri, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
   }
 
   async function handleImportFromUrl() {
@@ -491,6 +616,7 @@ export default function AddRecipeScreen() {
       Alert.alert('שגיאה', 'נא להזין כתובת תקינה המתחילה ב-https://');
       return;
     }
+    if (!checkAiQuota()) return;
 
     setIsImportingUrl(true);
     const controller = new AbortController();
@@ -548,6 +674,7 @@ export default function AddRecipeScreen() {
         if (recipe.ingredients.length) { setIngredients(recipe.ingredients); fieldKeys.add('ingredients'); fieldLabels.push('מרכיבים'); }
         if (recipe.steps.length)       { setSteps(recipe.steps);             fieldKeys.add('steps');       fieldLabels.push('שלבים');   }
 
+        if (fieldKeys.size > 0) await doDeductQuota();
         setImportedFields(fieldKeys);
         setUrlInput('');
         Alert.alert(
@@ -565,6 +692,7 @@ export default function AddRecipeScreen() {
       console.log('[URL Import] Has LD+JSON:', hasLdJson, '| page title:', pageTitle);
 
       if (pageTitle) {
+        await doDeductQuota();
         setTitle(pageTitle);
         setImportedFields(new Set(['title']));
         Alert.alert(
@@ -669,9 +797,9 @@ export default function AddRecipeScreen() {
           {/* ── Header ── */}
           <View style={styles.header}>
             <TouchableOpacity
-              style={[styles.importBtn, isImporting && styles.importBtnDisabled]}
+              style={[styles.importBtn, (isImporting || aiBlocked) && styles.importBtnDisabled]}
               onPress={handleImportFromFile}
-              disabled={isImporting}
+              disabled={isImporting || aiBlocked}
               activeOpacity={0.8}
             >
               {isImporting ? (
@@ -680,7 +808,7 @@ export default function AddRecipeScreen() {
                 <Ionicons name="document-text-outline" size={17} color={Colors.primary} />
               )}
               <Text style={styles.importBtnLabel}>
-                {isImporting ? 'טוען...' : 'טען מקובץ'}
+                {isImporting ? 'טוען...' : aiLabel('טען מקובץ')}
               </Text>
             </TouchableOpacity>
             <View style={styles.headerTitleRow}>
@@ -706,9 +834,9 @@ export default function AddRecipeScreen() {
               textAlign="left"
             />
             <TouchableOpacity
-              style={[styles.importBtn, styles.urlImportBtn, (isImportingUrl || !urlInput.trim()) && styles.importBtnDisabled]}
+              style={[styles.importBtn, styles.urlImportBtn, (isImportingUrl || !urlInput.trim() || aiBlocked) && styles.importBtnDisabled]}
               onPress={handleImportFromUrl}
-              disabled={isImportingUrl || !urlInput.trim()}
+              disabled={isImportingUrl || !urlInput.trim() || aiBlocked}
               activeOpacity={0.8}
             >
               {isImportingUrl ? (
@@ -717,7 +845,7 @@ export default function AddRecipeScreen() {
                 <Ionicons name="link-outline" size={17} color={Colors.primary} />
               )}
               <Text style={styles.importBtnLabel}>
-                {isImportingUrl ? 'טוען...' : 'ייבא מקישור'}
+                {isImportingUrl ? 'טוען...' : aiLabel('ייבא מקישור')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -725,20 +853,24 @@ export default function AddRecipeScreen() {
           {/* ══ OCR SCAN ROW ══ */}
           <View style={styles.ocrRow}>
             <TouchableOpacity
-              style={[styles.importBtn, styles.ocrScanBtn, isProcessingOcr && styles.importBtnDisabled]}
+              style={[styles.importBtn, styles.ocrScanBtn, (isProcessingOcr || aiBlocked) && styles.importBtnDisabled]}
               onPress={pickOcrImages}
-              disabled={isProcessingOcr}
+              disabled={isProcessingOcr || aiBlocked}
               activeOpacity={0.8}
             >
               <Ionicons name="scan-outline" size={17} color={Colors.primary} />
-              <Text style={styles.importBtnLabel}>סרוק תמונות למתכון</Text>
+              <Text style={styles.importBtnLabel}>{aiLabel('סרוק תמונות')}</Text>
             </TouchableOpacity>
 
             {ocrImages.length > 0 && (
               <TouchableOpacity
-                style={[styles.importBtn, styles.ocrProcessBtn, isProcessingOcr && styles.importBtnDisabled]}
+                style={[
+                  styles.importBtn,
+                  styles.ocrProcessBtn,
+                  (isProcessingOcr || (!userProfile?.is_premium && userProfile?.ai_quota === 0)) && styles.importBtnDisabled,
+                ]}
                 onPress={() => processOcrImages(ocrImages)}
-                disabled={isProcessingOcr}
+                disabled={isProcessingOcr || (!userProfile?.is_premium && userProfile?.ai_quota === 0)}
                 activeOpacity={0.8}
               >
                 {isProcessingOcr ? (
@@ -747,7 +879,11 @@ export default function AddRecipeScreen() {
                   <Ionicons name="sparkles-outline" size={17} color={Colors.primary} />
                 )}
                 <Text style={styles.importBtnLabel}>
-                  {isProcessingOcr ? 'מעבד...' : 'עבד תמונות'}
+                  {isProcessingOcr
+                    ? 'מעבד...'
+                    : userProfile && !userProfile.is_premium
+                      ? `👑 עבד תמונות (${userProfile.ai_quota} נותרו)`
+                      : '👑 עבד תמונות'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -914,7 +1050,8 @@ export default function AddRecipeScreen() {
                 />
                 <MicButton
                   isActive={activeTarget?.type === 'ingredient' && activeTarget.index === index}
-                  onPress={() => startListening('ingredient', index, ingredient, v => updateIngredient(index, v))}
+                  onPress={() => { if (checkAiQuota()) startListening('ingredient', index, ingredient, async v => { updateIngredient(index, v); await doDeductQuota(); }); }}
+                  showCrown
                 />
               </View>
             ))}
@@ -954,7 +1091,8 @@ export default function AddRecipeScreen() {
                 </View>
                 <MicButton
                   isActive={activeTarget?.type === 'step' && activeTarget.index === index}
-                  onPress={() => startListening('step', index, step, v => updateStep(index, v))}
+                  onPress={() => { if (checkAiQuota()) startListening('step', index, step, async v => { updateStep(index, v); await doDeductQuota(); }); }}
+                  showCrown
                 />
               </View>
             ))}
@@ -988,7 +1126,7 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.21.1</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.23.1</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>

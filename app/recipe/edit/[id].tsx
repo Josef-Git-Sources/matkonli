@@ -2,6 +2,7 @@ import {
   View,
   Text,
   Image,
+  Modal,
   TextInput,
   ScrollView,
   TouchableOpacity,
@@ -10,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
@@ -52,7 +54,8 @@ export default function EditRecipeScreen() {
   const [existingOcrImageUrls, setExistingOcrImageUrls] = useState<string[]>([]); // stored OCR URLs
 
   const { activeTarget, toastMsg, startListening } = useSpeechInput();
-  const [showOcrPreview, setShowOcrPreview] = useState(false);
+  const [showOcrPreview,    setShowOcrPreview]    = useState(false);
+  const [showOriginalModal, setShowOriginalModal] = useState(false);
 
   const allOcrImages = [...existingOcrImageUrls, ...ocrImages];
 
@@ -506,10 +509,90 @@ export default function EditRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.21.1</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.23.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ── Floating "View Original" FAB ── */}
+      {allOcrImages.length > 0 && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => setShowOriginalModal(true)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="eye-outline" size={18} color="#fff" />
+          <Text style={styles.fabLabel}>צפה במקור</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ── Original images comparison modal ── */}
+      <Modal
+        visible={showOriginalModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowOriginalModal(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.origOverlay}>
+          {/* Tap backdrop to dismiss */}
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            onPress={() => setShowOriginalModal(false)}
+            activeOpacity={1}
+          />
+
+          <View style={styles.origSheet}>
+            {/* ── Sheet header ── */}
+            <View style={styles.origHeader}>
+              <TouchableOpacity
+                style={styles.origCloseBtn}
+                onPress={() => setShowOriginalModal(false)}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close" size={22} color={Colors.textSecondary} />
+              </TouchableOpacity>
+
+              <View style={styles.origTitleRow}>
+                <Ionicons name="images-outline" size={18} color={Colors.primary} />
+                <Text style={styles.origTitle}>תמונות מקור לעיון</Text>
+              </View>
+
+              <View style={styles.origBadge}>
+                <Text style={styles.origBadgeText}>{allOcrImages.length}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.origHint}>הקש על תמונה להגדלה וזום</Text>
+
+            {/* ── Image cards ── */}
+            <ScrollView
+              contentContainerStyle={styles.origScrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {allOcrImages.map((uri, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.origCard}
+                  onPress={() => { setShowOriginalModal(false); openViewer(allOcrImages, index); }}
+                  activeOpacity={0.88}
+                >
+                  <Image
+                    source={{ uri }}
+                    style={styles.origCardImage}
+                    resizeMode="contain"
+                  />
+                  <View style={styles.origCardFooter}>
+                    <Ionicons name="expand-outline" size={13} color={Colors.primary} />
+                    <Text style={styles.origCardLabel}>תמונה {index + 1} מתוך {allOcrImages.length}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── Unified fullscreen image viewer ── */}
       <ImageViewerModal
@@ -540,6 +623,8 @@ function FieldLabel({ text }: { text: string }) {
 }
 
 // ── Styles ────────────────────────────────────────────────────
+
+const SCREEN_W = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
   safeArea:     { flex: 1, backgroundColor: 'transparent' },
@@ -755,4 +840,154 @@ const styles = StyleSheet.create({
   ocrThumbnailWrap:      { width: 90, height: 90, borderRadius: 10, overflow: 'hidden' },
   ocrThumbnail:          { width: '100%', height: '100%' },
   ocrRemoveBtn:          { position: 'absolute', top: 4, right: 4 },
+
+  // ── Floating "View Original" FAB ──
+  fab: {
+    position: 'absolute',
+    bottom: Platform.OS === 'web' ? 28 : 24,
+    right: 20,
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: Colors.primary,
+    borderRadius: 28,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    zIndex: 50,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.22,
+        shadowRadius: 8,
+      },
+      android: { elevation: 8 },
+      default: { boxShadow: '0 4px 16px rgba(0,0,0,0.22)' } as any,
+    }),
+  },
+  fabLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+
+  // ── Original images comparison modal / bottom sheet ──
+  origOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.52)',
+  },
+  origSheet: {
+    backgroundColor: 'rgba(255,250,244,0.98)',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+    borderTopWidth: 1,
+    borderColor: Colors.border,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.12,
+        shadowRadius: 10,
+      },
+      android: { elevation: 16 },
+      default: {},
+    }),
+  },
+  origHeader: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: 10,
+  },
+  origTitleRow: {
+    flex: 1,
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 7,
+  },
+  origTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    textAlign: 'right',
+  },
+  origBadge: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: Colors.primary + '44',
+  },
+  origBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
+  origCloseBtn: {
+    padding: 4,
+    borderRadius: 16,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  origHint: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+    paddingHorizontal: 18,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  origScrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
+    gap: 14,
+  },
+  origCard: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    width: '100%',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.07,
+        shadowRadius: 6,
+      },
+      android: { elevation: 3 },
+      default: {},
+    }),
+  },
+  origCardImage: {
+    width: '100%',
+    height: Math.round(SCREEN_W * 0.72),
+    backgroundColor: Colors.surface,
+  },
+  origCardFooter: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: Colors.primaryLight,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  origCardLabel: {
+    fontSize: 12,
+    color: Colors.primary,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
 });

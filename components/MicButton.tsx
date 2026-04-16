@@ -1,4 +1,4 @@
-import { TouchableOpacity, View, Text, StyleSheet } from 'react-native';
+import { TouchableOpacity, View, Text, StyleSheet, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 
@@ -6,23 +6,30 @@ import Colors from '@/constants/colors';
 export function MicButton({
   isActive,
   onPress,
+  showCrown = false,
 }: {
-  isActive: boolean;
-  onPress: () => void;
+  isActive:   boolean;
+  onPress:    () => void;
+  showCrown?: boolean;
 }) {
   return (
-    <TouchableOpacity
-      style={[styles.btn, isActive && styles.btnActive]}
-      onPress={onPress}
-      activeOpacity={0.75}
-      hitSlop={6}
-    >
-      <Ionicons
-        name={isActive ? 'mic' : 'mic-outline'}
-        size={18}
-        color={isActive ? '#fff' : Colors.textSecondary}
-      />
-    </TouchableOpacity>
+    <View style={styles.btnWrap}>
+      <TouchableOpacity
+        style={[styles.btn, isActive && styles.btnActive]}
+        onPress={onPress}
+        activeOpacity={0.75}
+        hitSlop={6}
+      >
+        <Ionicons
+          name={isActive ? 'mic' : 'mic-outline'}
+          size={18}
+          color={isActive ? '#fff' : Colors.textSecondary}
+        />
+      </TouchableOpacity>
+      {showCrown && !isActive && (
+        <Text style={styles.crown}>👑</Text>
+      )}
+    </View>
   );
 }
 
@@ -38,6 +45,9 @@ export function SpeechToast({ message }: { message: string | null }) {
 }
 
 const styles = StyleSheet.create({
+  btnWrap: {
+    position: 'relative',
+  },
   btn: {
     width: 34,
     height: 34,
@@ -52,6 +62,13 @@ const styles = StyleSheet.create({
   btnActive: {
     backgroundColor: '#E74C3C',
     borderColor: '#E74C3C',
+  },
+  crown: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    fontSize: 10,
+    lineHeight: 12,
   },
 
   toast: {

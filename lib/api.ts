@@ -1,5 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import type { CategoryRow, DifficultyLevel, RecipeRow, IngredientRow } from '@/types/database';
+import { getUserProfile } from './userProfile';
+import { saveLocalRecipe, getLocalRecipes, getLocalRecipeById } from './localStore';
 
 // ── Recipes (read) ────────────────────────────────────────────
 
@@ -13,6 +15,12 @@ export interface RecipeWithCategories extends RecipeRow {
  * recipe's category names pre-fetched for client-side search filtering.
  */
 export async function fetchRecipes(): Promise<RecipeWithCategories[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  const profile = await getUserProfile();
+
+  // Fetch from Supabase (all users — needed to show pre-existing cloud recipes)
   const { data, error } = await supabase
     .from('recipes')
     .select('*, recipe_categories(categories(name_he))')
@@ -20,12 +28,24 @@ export async function fetchRecipes(): Promise<RecipeWithCategories[]> {
 
   if (error) throw error;
 
-  return (data ?? []).map((r: any) => ({
+  const cloudRecipes: RecipeWithCategories[] = (data ?? []).map((r: any) => ({
     ...r,
     categoryNames: (r.recipe_categories ?? [])
       .map((rc: any) => rc.categories?.name_he as string | undefined)
       .filter((n): n is string => Boolean(n)),
   }));
+
+  // Premium users: cloud only
+  if (profile.is_premium) return cloudRecipes;
+
+  // Free users: merge cloud recipes with any locally-saved recipes,
+  // sorted newest-first. Local recipes have IDs starting with "local_"
+  // so there is no risk of collision with Supabase UUIDs.
+  const localRecipes = await getLocalRecipes();
+  const merged = [...localRecipes, ...cloudRecipes].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  return merged;
 }
 
 export interface RecipeDetail extends RecipeRow {
@@ -37,6 +57,26 @@ export interface RecipeDetail extends RecipeRow {
  * Fetches a single recipe with its ingredients and categories.
  */
 export async function fetchRecipeById(id: string): Promise<RecipeDetail> {
+  // Local recipe (saved on-device for free users)
+  if (id.startsWith('local_')) {
+    const local = await getLocalRecipeById(id);
+    if (!local) throw new Error('Local recipe not found');
+    return {
+      ...local,
+      ingredients: local.ingredients_list.map((name, i) => ({
+        id:          `local_ing_${i}`,
+        recipe_id:   id,
+        name,
+        amount:      null,
+        unit:        null,
+        notes:       null,
+        order_index: i,
+        created_at:  local.created_at,
+      })),
+      categories: [],
+    };
+  }
+
   const [recipeRes, ingredientsRes, categoryLinksRes] = await Promise.all([
     supabase.from('recipes').select('*').eq('id', id).single(),
     supabase.from('ingredients').select('*').eq('recipe_id', id).order('order_index'),
@@ -261,6 +301,15 @@ export async function saveRecipe(params: SaveRecipeParams): Promise<void> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('יש להתחבר כדי לשמור מתכון.');
 
+  const profile = await getUserProfile();
+
+  // Free users: save to local device storage only
+  if (!profile.is_premium) {
+    await saveLocalRecipe(params, user.id);
+    return;
+  }
+
+  // Premium users: save to Supabase
   const cleanIngredients = params.ingredients.filter(i => i.trim());
   const cleanSteps       = params.steps.filter(s => s.trim());
 
