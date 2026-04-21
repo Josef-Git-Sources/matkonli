@@ -18,9 +18,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
-import { fetchRecipes, toggleFavorite } from '@/lib/api';
+import { fetchRecipes, fetchCategories, toggleFavorite } from '@/lib/api';
 import type { RecipeWithCategories } from '@/lib/api';
-import type { DifficultyLevel } from '@/types/database';
+import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useTheme } from '@/context/ThemeContext';
 
 // ── Difficulty helpers ─────────────────────────────────────────
@@ -56,13 +56,14 @@ function isFiller(item: GridItem): item is FillerItem {
 // ── Screen ────────────────────────────────────────────────────
 
 export default function HomeScreen() {
-  const [recipes, setRecipes]             = useState<RecipeWithCategories[]>([]);
-  const [isLoading, setIsLoading]         = useState(true);
-  const [error, setError]                 = useState<string | null>(null);
-  const [searchQuery, setSearchQuery]               = useState('');
-  const [selectedCategory, setSelectedCategory]     = useState<string | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel | null>(null);
-  const [showFavoritesOnly, setShowFavoritesOnly]   = useState(false);
+  const [recipes, setRecipes]               = useState<RecipeWithCategories[]>([]);
+  const [allCategories, setAllCategories]   = useState<CategoryRow[]>([]);
+  const [isLoading, setIsLoading]           = useState(true);
+  const [error, setError]                   = useState<string | null>(null);
+  const [searchQuery, setSearchQuery]                 = useState('');
+  const [selectedCategoryId, setSelectedCategoryId]   = useState<string | null>(null);
+  const [selectedDifficulty, setSelectedDifficulty]   = useState<DifficultyLevel | null>(null);
+  const [showFavoritesOnly, setShowFavoritesOnly]     = useState(false);
   const router     = useRouter();
   const { width }  = useWindowDimensions();
   const numColumns = getNumColumns(width);
@@ -72,8 +73,8 @@ export default function HomeScreen() {
     useCallback(() => {
       setIsLoading(true);
       setError(null);
-      fetchRecipes()
-        .then(setRecipes)
+      Promise.all([fetchRecipes(), fetchCategories()])
+        .then(([r, cats]) => { setRecipes(r); setAllCategories(cats); })
         .catch(() => setError('שגיאה בטעינת המתכונים'))
         .finally(() => setIsLoading(false));
     }, [])
@@ -89,14 +90,8 @@ export default function HomeScreen() {
     });
   }
 
-  // Derive unique category names from all loaded recipes
-  const availableCategories = useMemo<string[]>(() => {
-    const seen = new Set<string>();
-    for (const r of recipes) {
-      for (const name of r.categoryNames) seen.add(name);
-    }
-    return Array.from(seen).sort((a, b) => a.localeCompare(b, 'he'));
-  }, [recipes]);
+  // All categories (system + user) for the filter bar — loaded from fetchCategories()
+  const availableCategories = allCategories;
 
   // Derive difficulty values that actually appear in the loaded recipes
   const availableDifficulties = useMemo<DifficultyLevel[]>(() => {
@@ -105,7 +100,7 @@ export default function HomeScreen() {
     return order.filter(d => seen.has(d));
   }, [recipes]);
 
-  // Apply search + category + difficulty + favorites filter
+  // Apply search + category (by ID) + difficulty + favorites filter
   const filteredRecipes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return recipes.filter(r => {
@@ -115,11 +110,12 @@ export default function HomeScreen() {
         (r.description ?? '').toLowerCase().includes(q) ||
         r.categoryNames.some(n => n.toLowerCase().includes(q))
       );
-      const matchesCategory   = !selectedCategory   || r.categoryNames.includes(selectedCategory);
+      // Filter by category ID — works for both cloud (UUID) and local ("local_cat_") categories
+      const matchesCategory = !selectedCategoryId || (r.categoryIds ?? []).includes(selectedCategoryId);
       const matchesDifficulty = !selectedDifficulty || r.difficulty === selectedDifficulty;
       return matchesSearch && matchesCategory && matchesDifficulty;
     });
-  }, [recipes, searchQuery, selectedCategory, selectedDifficulty, showFavoritesOnly]);
+  }, [recipes, searchQuery, selectedCategoryId, selectedDifficulty, showFavoritesOnly]);
 
   // Pad with filler cells so the last grid row doesn't stretch
   const remainder   = filteredRecipes.length % numColumns;
@@ -180,21 +176,24 @@ export default function HomeScreen() {
                 style={styles.chipsScroll}
               >
                 <TouchableOpacity
-                  style={[styles.chip, !selectedCategory && styles.chipActive]}
-                  onPress={() => setSelectedCategory(null)}
+                  style={[styles.chip, !selectedCategoryId && styles.chipActive]}
+                  onPress={() => setSelectedCategoryId(null)}
                   activeOpacity={0.75}
                 >
-                  <Text style={[styles.chipLabel, !selectedCategory && styles.chipLabelActive]}>הכל</Text>
+                  <Text style={[styles.chipLabel, !selectedCategoryId && styles.chipLabelActive]}>הכל</Text>
                 </TouchableOpacity>
                 {availableCategories.map(cat => (
                   <TouchableOpacity
-                    key={cat}
-                    style={[styles.chip, selectedCategory === cat && styles.chipActive]}
-                    onPress={() => setSelectedCategory(prev => prev === cat ? null : cat)}
+                    key={cat.id}
+                    style={[styles.chip, selectedCategoryId === cat.id && styles.chipActive]}
+                    onPress={() => setSelectedCategoryId(prev => prev === cat.id ? null : cat.id)}
                     activeOpacity={0.75}
                   >
-                    <Text style={[styles.chipLabel, selectedCategory === cat && styles.chipLabelActive]}>
-                      {cat}
+                    {cat.icon ? (
+                      <Text style={styles.chipIcon}>{cat.icon}</Text>
+                    ) : null}
+                    <Text style={[styles.chipLabel, selectedCategoryId === cat.id && styles.chipLabelActive]}>
+                      {cat.name_he}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -508,6 +507,10 @@ const styles = StyleSheet.create({
   chipActive: {
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
+  },
+  chipIcon: {
+    fontSize: 13,
+    marginEnd: 2,
   },
   chipLabel: {
     fontSize: 13,

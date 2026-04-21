@@ -21,7 +21,7 @@ import ImageViewerModal from '@/components/ImageViewerModal';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { compressImage } from '@/utils/imageUtils';
-import { fetchRecipeById, fetchCategories, updateRecipe } from '@/lib/api';
+import { fetchRecipeById, fetchCategories, updateRecipe, createCategory } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
 import { MicButton, SpeechToast } from '@/components/MicButton';
@@ -70,6 +70,19 @@ export default function EditRecipeScreen() {
     setViewerVisible(true);
   }
 
+  // ── Dirty tracking (enable Save only after real changes) ──
+  const [initialState, setInitialState] = useState<{
+    title:               string;
+    description:         string;
+    prepTime:            string;
+    difficulty:          DifficultyLevel | null;
+    categories:          string[]; // sorted for fast compare
+    ingredients:         string[];
+    steps:               string[];
+    existingImageUrl:    string | null;
+    existingOcrImageUrls:string[];
+  } | null>(null);
+
   // ── Loading state ──
   const [isFetching, setIsFetching]   = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -78,22 +91,43 @@ export default function EditRecipeScreen() {
   // ── Categories ──
   const [categories, setCategories]               = useState<CategoryRow[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [newCatName, setNewCatName]               = useState('');
+  const [isAddingCat, setIsAddingCat]             = useState(false);
 
   // Fetch recipe + categories in parallel on mount
   useEffect(() => {
     if (!id) return;
     Promise.all([fetchRecipeById(id), fetchCategories()])
       .then(([recipe, cats]) => {
+        const catIds       = recipe.categories.map(c => c.id);
+        const ingNames     = recipe.ingredients.length > 0 ? recipe.ingredients.map(i => i.name) : [''];
+        const stepTexts    = recipe.instructions.length > 0 ? recipe.instructions.map(s => s.text) : [''];
+        const imageUrl     = recipe.image_url ?? null;
+        const ocrUrls      = recipe.ocr_images ?? [];
+
         setTitle(recipe.title);
         setDescription(recipe.description ?? '');
         setPrepTime(recipe.prep_time ? String(recipe.prep_time) : '');
         setDifficulty(recipe.difficulty ?? null);
-        setSelectedCategories(recipe.categories.map(c => c.id));
-        setIngredients(recipe.ingredients.length > 0 ? recipe.ingredients.map(i => i.name) : ['']);
-        setSteps(recipe.instructions.length > 0 ? recipe.instructions.map(s => s.text) : ['']);
-        setExistingImageUrl(recipe.image_url ?? null);
-        setExistingOcrImageUrls(recipe.ocr_images ?? []);
+        setSelectedCategories(catIds);
+        setIngredients(ingNames);
+        setSteps(stepTexts);
+        setExistingImageUrl(imageUrl);
+        setExistingOcrImageUrls(ocrUrls);
         setCategories(cats);
+
+        // Snapshot for isDirty comparison
+        setInitialState({
+          title:                recipe.title,
+          description:          recipe.description ?? '',
+          prepTime:             recipe.prep_time ? String(recipe.prep_time) : '',
+          difficulty:           recipe.difficulty ?? null,
+          categories:           [...catIds].sort(),
+          ingredients:          ingNames,
+          steps:                stepTexts,
+          existingImageUrl:     imageUrl,
+          existingOcrImageUrls: ocrUrls,
+        });
       })
       .catch(() => setFetchError('שגיאה בטעינת המתכון'))
       .finally(() => { setIsFetching(false); setCategoriesLoading(false); });
@@ -152,6 +186,22 @@ export default function EditRecipeScreen() {
     );
   }
 
+  async function handleQuickAddCategory() {
+    const name = newCatName.trim();
+    if (!name) return;
+    setIsAddingCat(true);
+    try {
+      const newCat = await createCategory({ name_he: name });
+      setCategories(prev => [...prev, newCat]);
+      setSelectedCategories(prev => [...prev, newCat.id]);
+      setNewCatName('');
+    } catch (e: any) {
+      Alert.alert('שגיאה', 'לא ניתן ליצור קטגוריה: ' + (e.message ?? ''));
+    } finally {
+      setIsAddingCat(false);
+    }
+  }
+
   function updateIngredient(index: number, value: string) {
     setIngredients(prev => prev.map((item, i) => (i === index ? value : item)));
   }
@@ -171,6 +221,7 @@ export default function EditRecipeScreen() {
       Alert.alert('שגיאה', 'נא להזין כותרת למתכון');
       return;
     }
+    console.log('[handleSave edit.tsx] selectedCategories:', selectedCategories, '| recipe', id);
     setIsSubmitting(true);
     try {
       await updateRecipe(id!, {
@@ -195,7 +246,21 @@ export default function EditRecipeScreen() {
     }
   }
 
-  const canSave = title.trim().length > 0 && !isSubmitting;
+  const isDirty = initialState !== null && (
+    title !== initialState.title ||
+    description !== initialState.description ||
+    prepTime !== initialState.prepTime ||
+    difficulty !== initialState.difficulty ||
+    JSON.stringify([...selectedCategories].sort()) !== JSON.stringify(initialState.categories) ||
+    ingredients.join('\n') !== initialState.ingredients.join('\n') ||
+    steps.join('\n') !== initialState.steps.join('\n') ||
+    imageUri !== null ||
+    existingImageUrl !== initialState.existingImageUrl ||
+    JSON.stringify(existingOcrImageUrls) !== JSON.stringify(initialState.existingOcrImageUrls) ||
+    ocrImages.length > 0
+  );
+
+  const canSave = title.trim().length > 0 && !isSubmitting && isDirty;
   const previewUri = imageUri ?? existingImageUrl;
 
   // ── Loading / error gates ──
@@ -420,6 +485,34 @@ export default function EditRecipeScreen() {
                 })}
               </View>
             )}
+            {/* Quick-add new category inline */}
+            <View style={styles.quickCatRow}>
+              <TouchableOpacity
+                onPress={handleQuickAddCategory}
+                disabled={isAddingCat || !newCatName.trim()}
+                activeOpacity={0.75}
+              >
+                {isAddingCat ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <Ionicons
+                    name="add-circle"
+                    size={22}
+                    color={newCatName.trim() ? Colors.primary : Colors.border}
+                  />
+                )}
+              </TouchableOpacity>
+              <TextInput
+                style={styles.quickCatInput}
+                value={newCatName}
+                onChangeText={setNewCatName}
+                placeholder="+ צור קטגוריה חדשה"
+                placeholderTextColor={Colors.textSecondary}
+                textAlign="right"
+                returnKeyType="done"
+                onSubmitEditing={handleQuickAddCategory}
+              />
+            </View>
           </SectionCard>
 
           {/* ══ SECTION: Ingredients ══ */}
@@ -509,7 +602,7 @@ export default function EditRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.23.0</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.24.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -741,6 +834,22 @@ const styles = StyleSheet.create({
   saveButtonText:     { fontSize: 17, fontWeight: '700', color: '#fff' },
 
   versionLabel: { marginTop: 20, textAlign: 'center', fontSize: 11, color: '#C0C0C0' },
+
+  quickCatRow: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  quickCatInput: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    paddingVertical: 6,
+  },
 
   imagePicker: {
     height: 180,

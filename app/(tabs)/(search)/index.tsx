@@ -16,9 +16,9 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
-import { fetchRecipes, toggleFavorite } from '@/lib/api';
+import { fetchRecipes, fetchCategories, toggleFavorite } from '@/lib/api';
 import type { RecipeWithCategories } from '@/lib/api';
-import type { DifficultyLevel } from '@/types/database';
+import type { CategoryRow, DifficultyLevel } from '@/types/database';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -54,21 +54,22 @@ export default function SearchScreen() {
   const searchInputRef  = useRef<TextInput>(null);
 
   const [recipes, setRecipes]           = useState<RecipeWithCategories[]>([]);
+  const [allCategories, setAllCategories] = useState<CategoryRow[]>([]);
   const [isLoading, setIsLoading]       = useState(true);
   const [error, setError]               = useState<string | null>(null);
 
-  const [searchQuery,        setSearchQuery]        = useState('');
-  const [selectedCategory,   setSelectedCategory]   = useState<string | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel | null>(null);
-  const [showFavoritesOnly,  setShowFavoritesOnly]  = useState(false);
+  const [searchQuery,          setSearchQuery]          = useState('');
+  const [selectedCategoryId,   setSelectedCategoryId]   = useState<string | null>(null);
+  const [selectedDifficulty,   setSelectedDifficulty]   = useState<DifficultyLevel | null>(null);
+  const [showFavoritesOnly,    setShowFavoritesOnly]    = useState(false);
 
-  // Reload recipes every time the tab gains focus; auto-focus the search field
+  // Reload recipes + categories every time the tab gains focus
   useFocusEffect(
     useCallback(() => {
       setIsLoading(true);
       setError(null);
-      fetchRecipes()
-        .then(setRecipes)
+      Promise.all([fetchRecipes(), fetchCategories()])
+        .then(([r, cats]) => { setRecipes(r); setAllCategories(cats); })
         .catch(() => setError('שגיאה בטעינת המתכונים'))
         .finally(() => {
           setIsLoading(false);
@@ -88,11 +89,8 @@ export default function SearchScreen() {
 
   // ── Derived filter options ──────────────────────────────────
 
-  const availableCategories = useMemo<string[]>(() => {
-    const seen = new Set<string>();
-    for (const r of recipes) for (const n of r.categoryNames) seen.add(n);
-    return Array.from(seen).sort((a, b) => a.localeCompare(b, 'he'));
-  }, [recipes]);
+  // All categories (system + user) for filter chips — loaded via fetchCategories()
+  const availableCategories = allCategories;
 
   const availableDifficulties = useMemo<DifficultyLevel[]>(() => {
     const order: DifficultyLevel[] = ['easy', 'medium', 'hard'];
@@ -111,13 +109,13 @@ export default function SearchScreen() {
         r.title.toLowerCase().includes(q) ||
         (r.description ?? '').toLowerCase().includes(q) ||
         r.categoryNames.some(n => n.toLowerCase().includes(q));
-      const matchesCategory   = !selectedCategory   || r.categoryNames.includes(selectedCategory);
-      const matchesDifficulty = !selectedDifficulty || r.difficulty === selectedDifficulty;
+      const matchesCategory   = !selectedCategoryId || (r.categoryIds ?? []).includes(selectedCategoryId);
+      const matchesDifficulty = !selectedDifficulty  || r.difficulty === selectedDifficulty;
       return matchesSearch && matchesCategory && matchesDifficulty;
     });
-  }, [recipes, searchQuery, selectedCategory, selectedDifficulty, showFavoritesOnly]);
+  }, [recipes, searchQuery, selectedCategoryId, selectedDifficulty, showFavoritesOnly]);
 
-  const hasActiveFilter = !!(searchQuery || selectedCategory || selectedDifficulty || showFavoritesOnly);
+  const hasActiveFilter = !!(searchQuery || selectedCategoryId || selectedDifficulty || showFavoritesOnly);
 
   // Pad last row with invisible filler cells
   const remainder   = filteredRecipes.length % numColumns;
@@ -173,21 +171,22 @@ export default function SearchScreen() {
                 style={styles.chipsScroll}
               >
                 <TouchableOpacity
-                  style={[styles.chip, !selectedCategory && styles.chipActive]}
-                  onPress={() => setSelectedCategory(null)}
+                  style={[styles.chip, !selectedCategoryId && styles.chipActive]}
+                  onPress={() => setSelectedCategoryId(null)}
                   activeOpacity={0.75}
                 >
-                  <Text style={[styles.chipLabel, !selectedCategory && styles.chipLabelActive]}>הכל</Text>
+                  <Text style={[styles.chipLabel, !selectedCategoryId && styles.chipLabelActive]}>הכל</Text>
                 </TouchableOpacity>
                 {availableCategories.map(cat => (
                   <TouchableOpacity
-                    key={cat}
-                    style={[styles.chip, selectedCategory === cat && styles.chipActive]}
-                    onPress={() => setSelectedCategory(prev => prev === cat ? null : cat)}
+                    key={cat.id}
+                    style={[styles.chip, selectedCategoryId === cat.id && styles.chipActive]}
+                    onPress={() => setSelectedCategoryId(prev => prev === cat.id ? null : cat.id)}
                     activeOpacity={0.75}
                   >
-                    <Text style={[styles.chipLabel, selectedCategory === cat && styles.chipLabelActive]}>
-                      {cat}
+                    {cat.icon ? <Text style={styles.chipIcon}>{cat.icon}</Text> : null}
+                    <Text style={[styles.chipLabel, selectedCategoryId === cat.id && styles.chipLabelActive]}>
+                      {cat.name_he}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -461,6 +460,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
   },
   chipActive:       { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  chipIcon:         { fontSize: 13, marginEnd: 2 },
   chipLabel:        { fontSize: 13, fontWeight: '500', color: Colors.textSecondary },
   chipLabelActive:  { color: '#fff', fontWeight: '600' },
 

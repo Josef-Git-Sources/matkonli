@@ -23,6 +23,10 @@ export interface ProfileRow {
   username:   string | null;
   full_name:  string | null;
   avatar_url: string | null;
+  /** Whether the user has an active premium subscription. Set server-side only. */
+  is_premium: boolean;
+  /** Remaining free AI extraction uses. Decremented via decrement_ai_quota() RPC. */
+  ai_quota:   number;
   created_at: string;
   updated_at: string;
 }
@@ -99,7 +103,7 @@ export type UserFavoriteInsert = Omit<UserFavoriteRow, 'created_at'>;
 
 // ── Update types (all fields optional except id) ─────────────
 
-export type ProfileUpdate    = Partial<Omit<ProfileRow,    'id' | 'created_at'>>;
+export type ProfileUpdate    = Partial<Omit<ProfileRow,    'id' | 'created_at' | 'is_premium' | 'ai_quota'>>;
 export type CategoryUpdate   = Partial<Omit<CategoryRow,   'id' | 'created_at' | 'user_id'>>;
 export type RecipeUpdate     = Partial<Omit<RecipeRow,     'id' | 'created_at' | 'user_id'>>;
 export type IngredientUpdate = Partial<Omit<IngredientRow, 'id' | 'created_at' | 'recipe_id'>>;

@@ -14,8 +14,8 @@ import {
 } from 'react-native';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useEffect, useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '@/context/auth';
 import { getUserProfile, deductAiQuota } from '@/lib/userProfile';
 import type { UserProfile } from '@/lib/userProfile';
@@ -27,7 +27,7 @@ import { compressImage } from '@/utils/imageUtils';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { useTheme } from '@/context/ThemeContext';
-import { fetchCategories, saveRecipe } from '@/lib/api';
+import { fetchCategories, saveRecipe, createCategory } from '@/lib/api';
 import type { CategoryRow, DifficultyLevel } from '@/types/database';
 import { useSpeechInput } from '@/lib/useSpeechInput';
 import { MicButton, SpeechToast } from '@/components/MicButton';
@@ -189,13 +189,21 @@ export default function AddRecipeScreen() {
   const [categories, setCategories]               = useState<CategoryRow[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [categoriesError, setCategoriesError]     = useState<string | null>(null);
+  const [newCatName, setNewCatName]               = useState('');
+  const [isAddingCat, setIsAddingCat]             = useState(false);
 
-  useEffect(() => {
-    fetchCategories()
-      .then(setCategories)
-      .catch(() => setCategoriesError('שגיאה בטעינת הקטגוריות'))
-      .finally(() => setCategoriesLoading(false));
-  }, []);
+  // Reload categories every time the tab gains focus so that categories
+  // created or deleted in the Profile screen are reflected here immediately.
+  useFocusEffect(
+    useCallback(() => {
+      setCategoriesLoading(true);
+      setCategoriesError(null);
+      fetchCategories()
+        .then(setCategories)
+        .catch(() => setCategoriesError('שגיאה בטעינת הקטגוריות'))
+        .finally(() => setCategoriesLoading(false));
+    }, [])
+  );
 
   useEffect(() => {
     if (session) {
@@ -729,6 +737,22 @@ export default function AddRecipeScreen() {
     );
   }
 
+  async function handleQuickAddCategory() {
+    const name = newCatName.trim();
+    if (!name) return;
+    setIsAddingCat(true);
+    try {
+      const newCat = await createCategory({ name_he: name });
+      setCategories(prev => [...prev, newCat]);
+      setSelectedCategories(prev => [...prev, newCat.id]);
+      setNewCatName('');
+    } catch (e: any) {
+      Alert.alert('שגיאה', 'לא ניתן ליצור קטגוריה: ' + (e.message ?? ''));
+    } finally {
+      setIsAddingCat(false);
+    }
+  }
+
   function updateIngredient(index: number, value: string) {
     setIngredients(prev => prev.map((item, i) => (i === index ? value : item)));
   }
@@ -750,6 +774,8 @@ export default function AddRecipeScreen() {
       Alert.alert('שגיאה', 'נא להזין כותרת למתכון');
       return;
     }
+
+    console.log('[handleSave add.tsx] selectedCategories:', selectedCategories);
 
     setIsSubmitting(true);
     try {
@@ -1027,6 +1053,34 @@ export default function AddRecipeScreen() {
                 })}
               </View>
             )}
+            {/* Quick-add new category inline */}
+            <View style={styles.quickCatRow}>
+              <TouchableOpacity
+                onPress={handleQuickAddCategory}
+                disabled={isAddingCat || !newCatName.trim()}
+                activeOpacity={0.75}
+              >
+                {isAddingCat ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <Ionicons
+                    name="add-circle"
+                    size={22}
+                    color={newCatName.trim() ? Colors.primary : Colors.border}
+                  />
+                )}
+              </TouchableOpacity>
+              <TextInput
+                style={styles.quickCatInput}
+                value={newCatName}
+                onChangeText={setNewCatName}
+                placeholder="+ צור קטגוריה חדשה"
+                placeholderTextColor={Colors.textSecondary}
+                textAlign="right"
+                returnKeyType="done"
+                onSubmitEditing={handleQuickAddCategory}
+              />
+            </View>
           </SectionCard>
 
           {/* ══ SECTION: Ingredients ══ */}
@@ -1126,7 +1180,7 @@ export default function AddRecipeScreen() {
             )}
           </TouchableOpacity>
 
-          <Text style={styles.versionLabel}>גרסה: v1.23.1</Text>
+          <Text style={styles.versionLabel}>גרסה: v1.24.0</Text>
 
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1386,6 +1440,22 @@ const styles = StyleSheet.create({
 
   categoryIcon: {
     fontSize: 14,
+  },
+
+  quickCatRow: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  quickCatInput: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    paddingVertical: 6,
   },
 
   // ── Dynamic list rows ──
