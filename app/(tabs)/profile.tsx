@@ -14,6 +14,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { supabase } from '@/lib/supabase';
 import Colors from '@/constants/colors';
 import { useTheme } from '@/context/ThemeContext';
@@ -57,7 +59,8 @@ const OPACITY_LEVELS = [
 export default function ProfileScreen() {
   const [email, setEmail]         = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isSigningOut, setIsSigningOut]   = useState(false);
+  const [isUploadingBg, setIsUploadingBg] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   // ── Category management state ──
@@ -97,19 +100,55 @@ export default function ProfileScreen() {
 
   async function pickGalleryBackground() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      // No alert needed — permission dialog already explains
-      return;
-    }
+    if (status !== 'granted') return;
+
+    // base64: true ensures we always get raw base64 data alongside the URI.
+    // This is the fallback for web/Expo Go where the URI is a blob: object
+    // that React Native cannot render or persist.
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
-      quality: 0.8,
+      quality: 0.5,
+      base64: true,
     });
-    if (!result.canceled) {
-      setBackgroundImage(result.assets[0].uri);
-      // Keep current opacity, or default to 0.6 if currently at 0 (plain white)
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    setIsUploadingBg(true);
+
+    try {
+      let dataUri: string;
+
+      if (asset.uri.startsWith('file://')) {
+        // Native path: the URI is a real file on disk.
+        // Compress it first (limits size to ≤1080px wide, 50% quality JPEG),
+        // then read the compressed bytes as base64 via expo-file-system.
+        const compressed = await manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1080 } }],
+          { compress: 0.5, format: SaveFormat.JPEG },
+        );
+        const base64 = await FileSystem.readAsStringAsync(compressed.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        dataUri = `data:image/jpeg;base64,${base64}`;
+      } else {
+        // Web / Expo Go path: the URI is a blob: which FileSystem cannot read.
+        // Use the base64 data the picker already decoded for us.
+        if (!asset.base64) {
+          Alert.alert('שגיאה', 'לא ניתן לקרוא את התמונה בסביבה זו.');
+          return;
+        }
+        dataUri = `data:image/jpeg;base64,${asset.base64}`;
+      }
+
+      // setBackgroundImage validates the URI and saves to AsyncStorage + Supabase
+      setBackgroundImage(dataUri);
       if (backgroundOpacity === 0) setBackgroundOpacity(0.6);
+    } catch {
+      Alert.alert('שגיאה', 'לא ניתן לעבד את התמונה. נסה שוב.');
+    } finally {
+      setIsUploadingBg(false);
     }
   }
 
@@ -323,12 +362,19 @@ export default function ProfileScreen() {
 
           {/* Custom gallery background */}
           <TouchableOpacity
-            style={styles.galleryButton}
+            style={[styles.galleryButton, isUploadingBg && styles.galleryButtonDisabled]}
             onPress={pickGalleryBackground}
             activeOpacity={0.8}
+            disabled={isUploadingBg}
           >
-            <Ionicons name="image-outline" size={18} color={Colors.primary} />
-            <Text style={styles.galleryButtonLabel}>בחר רקע מהגלריה</Text>
+            {isUploadingBg ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <Ionicons name="image-outline" size={18} color={Colors.primary} />
+            )}
+            <Text style={styles.galleryButtonLabel}>
+              {isUploadingBg ? 'מעבד תמונה...' : 'בחר רקע מהגלריה'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -720,6 +766,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryLight,
     alignSelf: 'flex-end',
     marginTop: 4,
+  },
+  galleryButtonDisabled: {
+    opacity: 0.55,
   },
   galleryButtonLabel: {
     fontSize: 13,

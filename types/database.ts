@@ -27,6 +27,10 @@ export interface ProfileRow {
   is_premium: boolean;
   /** Remaining free AI extraction uses. Decremented via decrement_ai_quota() RPC. */
   ai_quota:   number;
+  /** User's chosen background image URL (preset or custom upload). Null = use app default. */
+  background_image_url: string | null;
+  /** Background overlay opacity (0–1). Null = use app default (0.6). */
+  background_opacity:   number | null;
   created_at: string;
   updated_at: string;
 }
@@ -89,7 +93,10 @@ export interface UserFavoriteRow {
 
 // ── Insert types (omit DB-generated fields) ───────────────────
 
-export type ProfileInsert = Omit<ProfileRow, 'created_at' | 'updated_at'>;
+export type ProfileInsert = Omit<ProfileRow, 'created_at' | 'updated_at' | 'background_image_url' | 'background_opacity'> & {
+  background_image_url?: string | null;
+  background_opacity?:   number | null;
+};
 
 export type CategoryInsert = Omit<CategoryRow, 'id' | 'created_at'>;
 

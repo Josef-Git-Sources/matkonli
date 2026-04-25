@@ -7,7 +7,11 @@ export interface UserProfile {
 
 /** Reads is_premium and ai_quota from the profiles DB table. Defaults: false / 3. */
 export async function getUserProfile(): Promise<UserProfile> {
-  const { data: { user } } = await supabase.auth.getUser();
+  // getSession() returns the cached session without a network round-trip.
+  // getUser() would make a server call on every invocation which can return
+  // null on mobile before AsyncStorage hydration completes.
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
   if (!user) return { is_premium: false, ai_quota: 0 };
 
   const { data, error } = await supabase

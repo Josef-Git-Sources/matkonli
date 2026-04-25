@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useCallback, useMemo, useState } from 'react';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useAuth } from '@/context/auth';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { fetchRecipes, fetchCategories, toggleFavorite } from '@/lib/api';
@@ -40,8 +41,7 @@ const DIFFICULTY_COLOR: Record<DifficultyLevel, string> = {
 function getNumColumns(width: number): number {
   if (width >= 1024) return 4;
   if (width >= 768)  return 3;
-  if (width >= 480)  return 2;
-  return 1;
+  return 2; // Always 2 columns on mobile so ≥4 recipes are visible at once
 }
 
 // ── Types ─────────────────────────────────────────────────────
@@ -68,16 +68,26 @@ export default function HomeScreen() {
   const { width }  = useWindowDimensions();
   const numColumns = getNumColumns(width);
   const { backgroundImage, backgroundOpacity } = useTheme();
+  // loading = true until the Supabase session is restored from AsyncStorage.
+  // On mobile this is async; on web localStorage hydration is synchronous.
+  const { loading: authLoading } = useAuth();
 
   useFocusEffect(
     useCallback(() => {
+      // Block the fetch until the session is available.  Without this guard,
+      // fetchRecipes() calls getSession() before AsyncStorage has been read on
+      // mobile, gets no user, and immediately returns [] — leaving the list empty.
+      // When authLoading flips to false the callback ref changes and useFocusEffect
+      // re-runs automatically, triggering the actual fetch.
+      if (authLoading) return;
+
       setIsLoading(true);
       setError(null);
       Promise.all([fetchRecipes(), fetchCategories()])
         .then(([r, cats]) => { setRecipes(r); setAllCategories(cats); })
         .catch(() => setError('שגיאה בטעינת המתכונים'))
         .finally(() => setIsLoading(false));
-    }, [])
+    }, [authLoading])
   );
 
   function handleToggleFavorite(id: string, currentValue: boolean) {
@@ -386,7 +396,9 @@ function RecipeCard({
         <Text style={styles.cardTitle} numberOfLines={2}>{recipe.title}</Text>
 
         {recipe.description ? (
-          <Text style={styles.cardDescription} numberOfLines={2}>{recipe.description}</Text>
+          <Text style={styles.cardDescription} numberOfLines={numColumns > 1 ? 1 : 2}>
+            {recipe.description}
+          </Text>
         ) : null}
 
         <View style={styles.metaRow}>
@@ -482,9 +494,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterRowLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textPrimary,
     flexShrink: 0,
   },
   chipsScroll: {
@@ -497,29 +509,32 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1.5,
     borderColor: Colors.border,
     backgroundColor: Colors.background,
+    minHeight: 36,
   },
   chipActive: {
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
   },
   chipIcon: {
-    fontSize: 13,
-    marginEnd: 2,
+    fontSize: 14,
+    marginEnd: 4,
   },
   chipLabel: {
-    fontSize: 13,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '600',
     color: Colors.textSecondary,
   },
   chipLabelActive: {
     color: '#fff',
-    fontWeight: '600',
+    fontWeight: '700',
   },
 
   mainContent: {
@@ -579,7 +594,7 @@ const styles = StyleSheet.create({
 
   cardImage: {
     width: '100%',
-    aspectRatio: 1,
+    aspectRatio: 4 / 3,
   },
   cardShareButton: {
     position: 'absolute',
@@ -599,7 +614,7 @@ const styles = StyleSheet.create({
   },
   cardImagePlaceholder: {
     width: '100%',
-    aspectRatio: 1,
+    aspectRatio: 4 / 3,
     backgroundColor: Colors.background,
     alignItems: 'center',
     justifyContent: 'center',

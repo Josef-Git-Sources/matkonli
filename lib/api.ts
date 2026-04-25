@@ -23,7 +23,10 @@ export interface RecipeWithCategories extends RecipeRow {
  * recipe's category names pre-fetched for client-side search filtering.
  */
 export async function fetchRecipes(): Promise<RecipeWithCategories[]> {
-  const { data: { user } } = await supabase.auth.getUser();
+  // Use getSession() (cached) instead of getUser() (server round-trip) so this
+  // works immediately after AsyncStorage hydration on mobile without a network call.
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
   if (!user) return [];
 
   const profile = await getUserProfile();
@@ -386,6 +389,30 @@ export async function deleteCategory(categoryId: string): Promise<void> {
 }
 
 // ── Storage ───────────────────────────────────────────────────
+
+/**
+ * Uploads a user-picked background image to Supabase Storage and returns
+ * a permanent public HTTPS URL.  Accepts both file:// (native) and blob:
+ * (web/Expo Go) URIs so callers never need to persist ephemeral local URIs.
+ * Each upload uses a unique timestamp filename to avoid CDN cache collisions.
+ */
+export async function uploadBackgroundImage(uri: string): Promise<string> {
+  const { data: { user } } = await supabase.auth.getUser();
+  const uid      = user?.id ?? 'anon';
+  const filePath = `${uid}/backgrounds/${Date.now()}.jpg`;
+
+  const response = await fetch(uri);
+  const blob     = await response.blob();
+
+  const { error } = await supabase.storage
+    .from('recipe-images')
+    .upload(filePath, blob, { contentType: 'image/jpeg', upsert: false });
+
+  if (error) throw error;
+
+  const { data } = supabase.storage.from('recipe-images').getPublicUrl(filePath);
+  return data.publicUrl;
+}
 
 /**
  * Uploads an image file to the recipe-images bucket and returns its public URL.

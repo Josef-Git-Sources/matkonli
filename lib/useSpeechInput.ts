@@ -1,5 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+
+// ── Native module availability guard ──────────────────────────────────
+// expo-speech-recognition requires a custom native build (EAS Build).
+// In standard Expo Go the native module is not present — guard all access
+// with a module-level try/catch so the app never crashes on import.
+let ExpoSpeechRecognitionModule: any = null;
+let useSpeechRecognitionEvent: (event: string, handler: (e: any) => void) => void = () => {};
+
+try {
+  const mod = require('expo-speech-recognition');
+  ExpoSpeechRecognitionModule = mod.ExpoSpeechRecognitionModule ?? null;
+  useSpeechRecognitionEvent   = mod.useSpeechRecognitionEvent   ?? (() => {});
+} catch {
+  // Native module not present in this build — speech feature silently disabled.
+}
+
+/** True only when the expo-speech-recognition native module is available. */
+export const SPEECH_AVAILABLE = ExpoSpeechRecognitionModule != null;
 
 export interface SpeechTarget {
   type: string;   // 'ingredient' | 'step'
@@ -26,7 +43,10 @@ export function useSpeechInput() {
   const callbackRef     = useRef<(v: string) => void>(() => {});
   const currentValueRef = useRef('');
 
-  useSpeechRecognitionEvent('result', (event) => {
+  // These three calls are always executed (same hook count every render).
+  // When SPEECH_AVAILABLE is false, useSpeechRecognitionEvent is a no-op,
+  // so zero React hooks are registered — consistent across all renders.
+  useSpeechRecognitionEvent('result', (event: any) => {
     if (!event.isFinal) return;
     const transcript = event.results?.[0]?.transcript?.trim() ?? '';
     if (!transcript) return;
@@ -38,10 +58,10 @@ export function useSpeechInput() {
     setActiveTarget(null);
   });
 
-  useSpeechRecognitionEvent('error', (event) => {
+  useSpeechRecognitionEvent('error', (event: any) => {
     setActiveTarget(null);
     // 'aborted' is triggered by our own stop() call — don't show a toast for that
-    if ((event as any).error !== 'aborted') {
+    if (event?.error !== 'aborted') {
       setToastMsg('זיהוי קול נכשל. בדוק הרשאת מיקרופון ונסה שוב.');
     }
   });
@@ -59,6 +79,11 @@ export function useSpeechInput() {
     currentValue: string,
     onResult: (v: string) => void,
   ) {
+    if (!SPEECH_AVAILABLE) {
+      setToastMsg('זיהוי קול אינו זמין בסביבה זו.');
+      return;
+    }
+
     // Tapping an active field stops it
     if (activeTarget?.type === type && activeTarget.index === index) {
       ExpoSpeechRecognitionModule.stop();
